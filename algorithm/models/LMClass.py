@@ -25,8 +25,16 @@ class LMClass(BaseLM):
         )
 
         self.tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=False,legacy=False)
+        # Load model with memory-efficient options: device_map='auto' places layers on available devices
+        # and low_cpu_mem_usage=True reduces peak CPU memory during loading.
         # self.model = AutoModelForCausalLM.from_pretrained(args.model, config=config, device_map='cpu',torch_dtype=config.torch_dtype)
-        self.model = AutoModelForCausalLM.from_pretrained(args.model, config=config, device_map='cpu',torch_dtype=torch.float16)
+        self.model = AutoModelForCausalLM.from_pretrained(
+            args.model,
+            config=config,
+            device_map='auto',
+            low_cpu_mem_usage=True,
+            torch_dtype=torch.float16,
+        )
         self.seqlen = self.model.config.max_position_embeddings
         self.model.eval()
         self.vocab_size = self.tokenizer.vocab_size
