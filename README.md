@@ -30,6 +30,76 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
+Recommended: reproducible FP16 evaluation workflow
+-------------------------------------------------
+If you plan to run accuracy evaluations using the Llama-2 family, the following workflow is a reliable and simple path that minimizes extra dependencies and is easiest to reproduce across machines.
+
+1. Create and activate the Python environment (Conda is recommended):
+
+```bash
+conda create -n flexq python=3.10 -y
+conda activate flexq
+cd ./FlexQ/algorithm
+pip install --upgrade pip setuptools wheel
+pip install -r requirements.txt
+```
+
+2. Obtain access to the Llama-2-7b model on Hugging Face and download a local snapshot (required for gated models):
+
+```bash
+# install helper tools if you haven't already
+pip install huggingface_hub safetensors
+
+# interactive login (opens prompt for token)
+huggingface-cli login
+
+# (optional) download the model to a local folder to avoid on-demand downloads during evaluation
+python - <<'PY'
+from huggingface_hub import snapshot_download
+snapshot_download(repo_id='meta-llama/Llama-2-7b-hf', cache_dir='/path/to/local/models/llama-2-7b-hf')
+PY
+```
+
+Note: you must accept Meta's license on the model page and use an account that has been granted access. If you prefer not to download a local copy, the evaluation script will attempt to download the model on demand (this may be slower and requires the same access).
+
+3. Run an example FP16 evaluation (loads model in FP16 by default):
+
+```bash
+cd ./FlexQ/algorithm
+python main.py --model /path/to/local/models/llama-2-7b-hf --net Llama-2-7b --eval_ppl --deactive_amp
+# or (download on demand):
+python main.py --model meta-llama/Llama-2-7b-hf --net Llama-2-7b --eval_ppl --deactive_amp
+```
+
+Keep `--wbits` and `--abits` at their defaults (16) when you want to run the FP16 evaluation flow — the code triggers additional quantization steps only when those flags are set to non-16 values.
+
+Portable environment options
+----------------------------
+You can keep your conda environment inside the project (a "prefix" environment) to avoid recreating a named environment every time you move hosts. Two common patterns:
+
+- Prefix env (quick, local): create the environment inside the repository and install packages there.
+
+```bash
+# from the repository root
+conda create --prefix ./flexq/.conda-env python=3.10 -y
+conda activate ./flexq/.conda-env
+pip install --upgrade pip setuptools wheel
+pip install -r algorithm/requirements.txt
+# install torch wheel appropriate for the host's CUDA (example):
+pip install --index-url https://download.pytorch.org/whl/cu121/ torch==2.2.0
+```
+
+- Conda-pack (portable archive for identical hosts): use `conda-pack` to create a relocatable tarball of the prefix environment. Copy the tarball to an identical Linux host and run the bundled `conda-unpack` helper inside the unpacked folder to fix absolute prefixes.
+
+```bash
+conda install -c conda-forge conda-pack -y
+conda-pack -p ./flexq/.conda-env -o ./flexq/flexq-conda-env.tar.gz
+# on the destination host, extract and run:
+tar -xzf flexq-conda-env.tar.gz -C <target_dir>
+<target_dir>/bin/conda-unpack
+```
+
+Important: CUDA / PyTorch binary compatibility and system toolkits are still host-specific. The conda-packed environment is portable only between compatible Linux distributions/architectures with compatible drivers; PyTorch CUDA wheels may need to be reinstalled for a different driver/CUDA runtime.
 
 ## Usage
 ### Accuracy Evaluation
