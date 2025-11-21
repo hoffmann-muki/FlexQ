@@ -255,3 +255,7 @@ __marimo__/
 *.ptx
 *.cubin
 *.fatbin
+
+# Ignore model snapshots and temporary model files
+models/
+models/**
