@@ -143,6 +143,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+.conda-env/
 
 # Spyder project settings
 .spyderproject
@@ -257,5 +258,4 @@ __marimo__/
 *.fatbin
 
 # Ignore model snapshots and temporary model files
-models/
-models/**
+models/*

@@ -70,7 +70,8 @@ def evaluate(lm, args, logger):
 
     if args.eval_ppl:
         # for dataset in ["wikitext2", "ptb", "c4","ptb-new",'c4-new']:
-        for dataset in ["wikitext2", "c4"]:
+        # TODO: Re-enable c4 evaluation later (currently disabled to save ~400MB disk space)
+        for dataset in ["wikitext2"]:  # "c4" commented out temporarily
             cache_testloader = f'{args.cache_dir}/testloader_{args.model_family}_{dataset}_all.cache'
             if os.path.exists(cache_testloader):
                 testloader = torch.load(cache_testloader)
