@@ -13,34 +13,7 @@ Large Language Models (LLMs) demonstrate exceptional performance but entail sign
 
 In this paper, we propose FlexQ, a novel post-training INT6 quantization framework combining algorithmic innovation with system-level optimizations. FlexQ employs uniform 6-bit weight quantization across all layers, with adaptive retention of 8-bit activations in layers identified through layer-wise sensitivity analysis. To maximize hardware efficiency, we develop a specialized high-performance GPU kernel supporting matrix multiplication for W6A6 and W6A8 representations via Binary Tensor Core (BTC) equivalents, effectively bypassing the lack of native INT6 tensor cores. Evaluations on LLaMA family models show FlexQ maintains near-FP16 accuracy, with perplexity increases of no more than 0.1 on WikiText2. The proposed kernel achieves an average 1.39× speedup over ABQ-LLM on LLaMA-2-70B linear layers. End-to-end, FlexQ delivers 1.33× inference acceleration and 1.21× memory savings over SmoothQuant.
 
-## Uniform W6A6 Activation Pathway
 
-The current `flex_linear_quant` strategy treats the MLP down-projection in sensitive layers as W6A8 while keeping other activations at W6A6. The visible `args.act_down_proj_quant_params` configuration and the down projection wiring inside `algorithm/models/int_llama_layer.py` (`QuantLlamaMLP.down_proj`) are where the `W6A8` fallback is materialized. To remove this bifurcation, we target the same codepath and remodel the activation pipeline so the entire model operates in W6A6 without accuracy loss.
-
-### Identifying Sensitive Layers
-
-- Sensitive layers are currently flagged by the `flex_linear_quant` flag, which switches the down-projection quantizer to 8-bit activations. Inspect `QuantLlamaMLP` in `algorithm/models/int_llama_layer.py` to see where `act_down_proj_quant_params` is wired into `QuantLinear` for the `down_proj` projection.
-- Once the hook is located, we can either remove the `flex_linear_quant` switch or repurpose it to mark layers that need dynamic clipping instead of higher precision.
-
-### Adaptive clipping and zero-point shift plan
-
-1. **Capture activation distributions.** During calibration or evaluation, hook the down projection quantizer and collect per-batch statistics (max, 99th/99.9th percentiles, mean). This informs where extreme activation spikes live.
-2. **Define a dynamic threshold.** Compute the INT6 threshold by rounding a high percentile (`p = 0.995–0.999`) of the absolute activations instead of the raw max; this compresses the outlier influence while keeping the linear features intact.
-3. **Calibrate a zero-point shift.** Apply a small offset so the clipped activation window is centered on the mean of the inlier distribution, reducing bias introduced by asymmetric spikes.
-4. **Plug into INT6 quantizer.** Replace the `W6A8` quantizer configuration with the existing INT6 pipeline (`act_quant_params`) and feed the dynamically clipped tensor plus zero-point before rounding. Optionally reuse `flexq_quantize.quantizer.UniformAffineQuantizer` via a lightweight wrapper to add clipping/shift steps.
-
-By collapsing this logic into the INT6 path, we remove the need for special-case hardwired precision decisions. Extended calibration can expose per-layer percentiles so practitioners can tweak thresholds/zero-point shift per layer or group.
-
-### Activation profiling tooling
-
-- We added `algorithm/analysis/activation_stats.py` to help profile sensitive activations. It exposes utilities to compute the max, 99.9th percentile, and other percentiles for any tensor and can be wired into `QuantLinear` via forward hooks.
-- Example workflow:
-  1. Register an `ActivationStatsHook` on `down_proj` and run a few calibration batches (e.g., from the `datasets/wikitext-2-raw-v1` cache downloaded earlier).
-  2. Record the 99.9th-percentile and maximum absolute values that W6A6 would need to cover.
-  3. Feed those values into the adaptive clipping logic to generate a percentiles threshold and zero-point shift for each sensitive layer.
-- Running `python algorithm/analysis/activation_stats.py --shape 4 128 4096 --percentiles 0.99 0.999` produces baseline stats for synthetic tensors so you can verify the measurement tooling works before applying it to real data.
-
-Once the percentile-guided threshold, zero-point shift, and quantization wrapper are implemented, we can drop the `act_down_proj_quant_params` alternatives and rely on a single `act_quant_params` path to keep the model uniformly W6A6.
 
 ## Install
 1. Clone this repository
