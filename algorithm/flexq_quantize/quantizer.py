@@ -46,7 +46,9 @@ class UniformAffineQuantizer(nn.Module):
         group_size=None,
         shape=None,
         disable_zero_point=False,
-        flex_quant=False
+        flex_quant=False,
+        clip_percentile: float | None = None,
+        zero_shift_scale: float = 0.0,
     ):
         """
         dynamic_method support per_token, per_channel and per_group
@@ -80,6 +82,10 @@ class UniformAffineQuantizer(nn.Module):
 
         self.enable = True
         self.group_size = group_size
+        self.clip_percentile = clip_percentile
+        self.zero_shift_scale = zero_shift_scale
+        self.last_clip_threshold = None
+        self.last_zero_shift = None
 
     def change_n_bits(self, n_bits):
         self.n_bits = n_bits
@@ -142,6 +148,7 @@ class UniformAffineQuantizer(nn.Module):
         return x_dequant
 
     def per_token_dynamic_calibration(self, x):
+        x = self.apply_adaptive_clipping(x)
         if self.group_size:
             if self.deficiency == 0:
                 x = x.reshape(-1,self.group_size)
@@ -175,3 +182,29 @@ class UniformAffineQuantizer(nn.Module):
         self.register_buffer('zeros', self.round_zero_point)
         del self.scale
         del self.round_zero_point
+        return
+
+    def apply_adaptive_clipping(self, x: torch.Tensor) -> torch.Tensor:
+        if self.clip_percentile is None and self.zero_shift_scale == 0.0:
+            return x
+
+        clipped = x
+        if self.clip_percentile is not None:
+            pct = max(0.0, min(1.0, self.clip_percentile))
+            if clipped.numel() == 0:
+                clip_thr = torch.tensor(0.0, dtype=clipped.dtype, device=clipped.device)
+            else:
+                flat = clipped.abs().flatten()
+                # ensure quantile compute uses a floating dtype
+                flat = flat.float()
+                clip_thr = torch.quantile(flat, torch.tensor(pct, dtype=flat.dtype, device=flat.device))
+            clipped = clipped.clamp(-clip_thr, clip_thr)
+            self.last_clip_threshold = clip_thr
+
+        if self.zero_shift_scale != 0.0:
+            shift = clipped.mean()
+            shift_value = shift * self.zero_shift_scale
+            clipped = clipped - shift_value
+            self.last_zero_shift = shift_value
+
+        return clipped

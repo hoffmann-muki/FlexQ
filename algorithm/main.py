@@ -2,17 +2,17 @@ import os
 import sys
 import random
 import numpy as np
-from models.LMClass import LMClass
+from algorithm.models.LMClass import LMClass
 import torch
 import time
-from datautils import get_loaders
+from algorithm.datautils import get_loaders
 from lm_eval import evaluator
 from pprint import pprint
-from parallel_utils import map_layers_to_multi_gpus, get_lowest_occupied_gpu
+from algorithm.parallel_utils import map_layers_to_multi_gpus, get_lowest_occupied_gpu
 import torch.nn as nn
-from flexq_quantize.flexqllm import flexqllm
+from algorithm.flexq_quantize.flexqllm import flexqllm
 from tqdm import tqdm
-import utils
+from algorithm import utils
 from pathlib import Path
 import pdb
 
@@ -190,7 +190,15 @@ def main():
         choices=["eager", "sdpa", "flash_attention_2"],
         help="attention implementation that the model works with",
     )
-    parser.add_argument("--net", type=str, default=None, choices=net_choices)
+    parser.add_argument("--net", type=str, default=None,
+                        help="model family key (case-insensitive)."
+                        )
+    parser.add_argument("--device_map", type=str, default=None,
+                        help="HuggingFace device_map to load model on (e.g. 'cuda:0' or 'auto')")
+    parser.add_argument("--low_cpu_mem_usage", action="store_true",
+                        help="Pass low_cpu_mem_usage=True when loading HuggingFace models with device_map")
+    parser.add_argument("--torch_dtype", type=str, default="float16",
+                        help="torch dtype to use when loading model (e.g. float16, auto)")
 
     parser.add_argument("--wbits", type=int, default=16)
     parser.add_argument("--w_group_size", type=int, default=None)
@@ -201,8 +209,46 @@ def main():
     parser.add_argument("--a_dynamic_method", type=str, default="per_token", choices=["per_token", "per_group"])
     parser.add_argument("--w_dynamic_method", type=str, default="per_channel", choices=["per_channel", "per_group"])
     parser.add_argument("--flex_linear_quant", default=False, action="store_true", help="down_proj uses W6A8 quantization, while other linear layers use W6A6")
+    parser.add_argument("--adaptive_clip_down_proj", default=False, action="store_true", help="apply adaptive percentile clipping/zero-point shift on down-projection activations before INT6 quantization")
+    parser.add_argument("--adaptive_clip_percentile", type=float, default=0.9995, help="percentile used to determine clipping threshold when adaptive clipping is enabled")
+    parser.add_argument("--adaptive_zero_shift_scale", type=float, default=0.0, help="scale factor to turn mean offsets into a zero-point shift when adaptive clipping is enabled")
 
     args = parser.parse_args()
+
+    # If the user supplied a device_map but didn't enable the low-memory flag,
+    # enable it automatically to avoid from_pretrained errors.
+    if getattr(args, "device_map", None) is not None and not getattr(args, "low_cpu_mem_usage", False):
+        print("Note: enabling --low_cpu_mem_usage because --device_map was provided")
+        args.low_cpu_mem_usage = True
+
+    # Normalize torch_dtype: allow user to pass strings like 'float16' or 'auto'
+    if isinstance(getattr(args, "torch_dtype", None), str):
+        td = args.torch_dtype
+        if td == "auto":
+            args.torch_dtype = "auto"
+        else:
+            try:
+                args.torch_dtype = getattr(torch, td)
+            except Exception:
+                print(f"Warning: unknown torch dtype '{td}', defaulting to torch.float16")
+                args.torch_dtype = torch.float16
+
+    # Allow case-insensitive net names: map user-provided key to one of the
+    # canonical `net_choices` entries when possible. This avoids argparse
+    # rejecting common forms like `llama-2-7b` while keeping the canonical
+    # names used elsewhere in the codebase.
+    if args.net is not None:
+        normalized = args.net.lower()
+        match = None
+        for choice in net_choices:
+            if choice.lower() == normalized:
+                match = choice
+                break
+        if match is not None:
+            args.net = match
+        else:
+            # No canonical match found — leave as provided but warn.
+            print(f"Warning: unknown --net '{args.net}'. Proceeding with provided value.")
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -250,6 +296,7 @@ def main():
     print("Quantization config: %s quantization disabled zero_point: %s" % (("Symmetric" if args.symmetric else "Asymmetric"), ("yes" if args.disable_zero_point else "no")))
     print("Quantization precision: w_bits=%d  a_bits=%d" % (args.wbits, args.abits))
     print("FlexQ linear layer strategy: %s" % (("Enabled" if args.flex_linear_quant else "Disabled")))
+    print("Adaptive clipping (down_proj): %s" % (("Enabled" if args.adaptive_clip_down_proj else "Disabled")))
     print("weight group-wise quantization: %s  w_group_size:%s" % (("Enabled" if args.w_group_size else "Disabled"), str(args.w_group_size)))
     print("activation group-wise quantization: %s  a_group_size:%s" % (("Enabled" if args.a_group_size else "Disabled"), str(args.a_group_size)))
     print("multigpu:%s" % ("Enabled" if args.multigpu else "Disabled"))
@@ -275,6 +322,11 @@ def main():
         "symmetric": False,
         "dynamic_method": args.a_dynamic_method,
     }
+    if args.adaptive_clip_down_proj:
+        args.act_down_proj_quant_params.update({
+            "clip_percentile": args.adaptive_clip_percentile,
+            "zero_shift_scale": args.adaptive_zero_shift_scale,
+        })
 
 
     # Enable dynamic group-wise quantization
@@ -295,6 +347,11 @@ def main():
             "group_size": args.a_group_size,
             "disable_zero_point": args.disable_zero_point
         }
+        if args.adaptive_clip_down_proj:
+            args.act_down_proj_quant_params.update({
+                "clip_percentile": args.adaptive_clip_percentile,
+                "zero_shift_scale": args.adaptive_zero_shift_scale,
+            })
 
     # Attention matmul with half-precision act
     args.q_quant_params = {

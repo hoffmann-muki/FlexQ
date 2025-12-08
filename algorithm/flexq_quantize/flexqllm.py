@@ -14,20 +14,20 @@
 
 import torch
 import torch.nn as nn
-from models.int_llama_layer import QuantLlamaDecoderLayer, QuantLlamaAttention
-from models.int_opt_layer import QuantOPTDecoderLayer, QuantOPTAttention
-from flexq_quantize.int_linear import QuantLinear
+from algorithm.models.int_llama_layer import QuantLlamaDecoderLayer, QuantLlamaAttention
+from algorithm.models.int_opt_layer import QuantOPTDecoderLayer, QuantOPTAttention
+from algorithm.flexq_quantize.int_linear import QuantLinear
 from contextlib import nullcontext
 import copy
 import math
-import utils
+from algorithm import utils
 import os
 import pdb
 from torch.nn import functional as F
 import gc
 import logging
 import numpy as np
-from flexq_quantize.utils import let_parameters, lwc_parameters, get_abq_parameters,com_parameters, \
+from algorithm.flexq_quantize.utils import let_parameters, lwc_parameters, get_abq_parameters,com_parameters, \
                             abq_state_dict, register_scales_and_zeros,smooth_and_quant_temporary,\
                             weight_quant_inplace,clear_temp_variable,set_quant_state
 
@@ -54,7 +54,10 @@ def flexqllm(
 
     # move embedding layer and first layer to target device
     model = lm.model
-    dev = lm.device
+    # `load_dev` is where the HF model was loaded (usually CPU). `quant_dev`
+    # is where we temporarily move a single layer for quantization (GPU if available).
+    load_dev = lm.device
+    quant_dev = torch.device("cuda") if torch.cuda.is_available() else load_dev
     use_cache = model.config.use_cache
     model.config.use_cache = False
     is_llama = False
@@ -62,8 +65,9 @@ def flexqllm(
     if "llama" in args.net.lower():
         is_llama = True
         layers = model.model.layers
-        model.model.embed_tokens = model.model.embed_tokens.to(dev)
-        model.model.norm = model.model.norm.to(dev)
+        # keep the model loaded on `load_dev` (typically CPU)
+        model.model.embed_tokens = model.model.embed_tokens.to(load_dev)
+        model.model.norm = model.model.norm.to(load_dev)
         DecoderLayer = QuantLlamaDecoderLayer
         pairs = {
             "q_proj":"qkv",
@@ -74,12 +78,12 @@ def flexqllm(
         layer_name_prefix = "model.layers"
     elif "opt" in args.net.lower():
         layers = model.model.decoder.layers
-        model.model.decoder.embed_tokens = model.model.decoder.embed_tokens.to(dev)
-        model.model.decoder.embed_positions = model.model.decoder.embed_positions.to(dev)
+        model.model.decoder.embed_tokens = model.model.decoder.embed_tokens.to(load_dev)
+        model.model.decoder.embed_positions = model.model.decoder.embed_positions.to(load_dev)
         if hasattr(model.model.decoder, "project_out") and model.model.decoder.project_out:
-            model.model.decoder.project_out = model.model.decoder.project_out.to(dev)
+            model.model.decoder.project_out = model.model.decoder.project_out.to(load_dev)
         if hasattr(model.model.decoder, "project_in") and model.model.decoder.project_in:
-            model.model.decoder.project_in = model.model.decoder.project_in.to(dev)
+            model.model.decoder.project_in = model.model.decoder.project_in.to(load_dev)
         DecoderLayer = QuantOPTDecoderLayer
         pairs = {
             "q_proj":"qkv",
@@ -92,16 +96,17 @@ def flexqllm(
         raise ValueError("Only support for llama/Llama-2 now")
     
     
-    layers[0] = layers[0].to(dev)
+    layers[0] = layers[0].to(load_dev)
 
     dtype = torch.float16
     traincast = torch.cuda.amp.autocast
 
     for i in range(len(layers)):
         logger.info(f"=== Start quantize layer {i} ===")
-        layer = layers[i].to(dev)
+        # Move only this layer to `quant_dev` for quantization to avoid OOM
+        layer = layers[i].to(quant_dev)
         qlayer = DecoderLayer(lm.model.config, layer, args)
-        qlayer = qlayer.to(dev)
+        qlayer = qlayer.to(quant_dev)
 
         set_quant_state(qlayer, weight_quant=True, act_quant=True)
             
@@ -110,11 +115,17 @@ def flexqllm(
         qlayer.half()
         # Register quantization flags into the model
         register_scales_and_zeros(qlayer)
-        layers[i] = qlayer.to("cpu")
+        # move quantized layer back to the load device (usually CPU)
+        try:
+            layers[i] = qlayer.to(load_dev)
+        except Exception:
+            # fallback to CPU
+            layers[i] = qlayer.to("cpu")
 
-        
         del layer
-        torch.cuda.empty_cache()
+        # clear CUDA cache only if we used CUDA
+        if quant_dev.type == "cuda":
+            torch.cuda.empty_cache()
 
     torch.cuda.empty_cache()
     gc.collect()                    

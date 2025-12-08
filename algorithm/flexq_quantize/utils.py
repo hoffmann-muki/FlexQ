@@ -13,10 +13,10 @@
 # limitations under the License.
 
 from collections import OrderedDict
-from flexq_quantize.int_linear import QuantLinear
+from algorithm.flexq_quantize.int_linear import QuantLinear
 import torch
-from flexq_quantize.int_matmul import QuantMatMul
-from models.transformation import *
+from algorithm.flexq_quantize.int_matmul import QuantMatMul
+from algorithm.models.transformation import *
 
 
 def let_parameters(model, use_shift=True):

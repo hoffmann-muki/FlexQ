@@ -1,14 +1,14 @@
 import torch
 from torch import nn
 from typing import Optional, Tuple, List
-from flexq_quantize.int_linear import QuantLinear
-from flexq_quantize.int_matmul import QuantMatMul
+from algorithm.flexq_quantize.int_linear import QuantLinear
+from algorithm.flexq_quantize.int_matmul import QuantMatMul
 import torch.nn.functional as F
-from flexq_quantize.flexq_norm import FlexQLayerNorm
+from algorithm.flexq_quantize.flexq_norm import FlexQLayerNorm
 from collections import OrderedDict
 import pdb
-from models.models_utils import truncate_number
-from models.transformation import *
+from algorithm.models.models_utils import truncate_number
+from algorithm.models.transformation import *
 
 class QuantOPTAttention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""

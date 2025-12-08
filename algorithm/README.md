@@ -88,6 +88,25 @@ Suggested implementation approach:
 - Compare FP16 perplexity/metrics to the W6A6-with-adaptive-clipping run. Expect a small drop relative to full FP16, and aim for parity with previous W6A8-enabled runs.
 - Re-run `algorithm/analysis/activation_stats.py` or registered hooks to confirm that the 99.9th percentile and max are within the INT6 representable range after clipping.
 
+### Adaptive clipping knobs
+
+The default build keeps the existing uniform INT6 path intact. To try the new outlier-aware path, enable the `--adaptive_clip_down_proj` flag when running `main.py` and specify the percentile/shift parameters you want to register with the quantizer. Those arguments get shipped into `act_down_proj_quant_params` and reach the `UniformAffineQuantizer` used by the down-projection `QuantLinear` wrapper.
+
+Example:
+
+```bash
+python main.py \
+   --model ../models/llama-2-7b-hf \
+   --wbits 6 --abits 6 \
+   --flex_linear_quant \
+   --adaptive_clip_down_proj \
+   --adaptive_clip_percentile 0.9995 \
+   --adaptive_zero_shift_scale 0.05 \
+   # other flags...
+```
+
+This lets you run both the legacy W6A8 fallback (`--flex_linear_quant`) and the new percentile-based clipping beside it so you can compare metrics without touching the uniform path.
+
 ## Implementation notes and cautions
 
 - Start conservative: prefer a higher percentile (e.g. 99.9) and small shifts; aggressive clipping can bias activations and harm accuracy.

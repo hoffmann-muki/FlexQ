@@ -40,8 +40,16 @@ def create_logger(output_dir, dist_rank=0, name=''):
             logging.Formatter(fmt=color_fmt, datefmt='%Y-%m-%d %H:%M:%S'))
         logger.addHandler(console_handler)
 
+    # ensure output directory exists (accept Path objects too)
+    try:
+        out_dir_str = str(output_dir)
+    except Exception:
+        out_dir_str = output_dir
+    if out_dir_str and not os.path.exists(out_dir_str):
+        os.makedirs(out_dir_str, exist_ok=True)
+
     # create file handlers
-    file_handler = logging.FileHandler(os.path.join(output_dir, f'log_rank{dist_rank}_{int(time.time())}.txt'), mode='a')
+    file_handler = logging.FileHandler(os.path.join(out_dir_str, f'log_rank{dist_rank}_{int(time.time())}.txt'), mode='a')
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(logging.Formatter(fmt=fmt, datefmt='%Y-%m-%d %H:%M:%S'))
     logger.addHandler(file_handler)

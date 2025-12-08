@@ -15,7 +15,7 @@ def compute_activation_summary(tensor: torch.Tensor, percentiles: Sequence[float
         return {"max": 0.0, **{f"p{int(p*1000)}": 0.0 for p in percentiles}}
 
     flattened = tensor.detach().flatten()
-    abs_values = flattened.abs()
+    abs_values = flattened.abs().float()
     result = {"max": float(abs_values.max().item())}
     if percentiles:
         pct = torch.quantile(abs_values, torch.tensor(percentiles, dtype=abs_values.dtype, device=abs_values.device))

@@ -1,10 +1,10 @@
 import torch
 from torch import nn
 from typing import Optional, Tuple, List
-from flexq_quantize.int_linear import QuantLinear
-from flexq_quantize.int_matmul import QuantMatMul
+from algorithm.flexq_quantize.int_linear import QuantLinear
+from algorithm.flexq_quantize.int_matmul import QuantMatMul
 import torch.nn.functional as F
-from flexq_quantize.flexq_norm import FlexQLlamaRMSNorm
+from algorithm.flexq_quantize.flexq_norm import FlexQLlamaRMSNorm
 from collections import OrderedDict
 import math
 from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding,apply_rotary_pos_emb,LlamaRMSNorm,repeat_kv
@@ -12,7 +12,7 @@ from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.activations import ACT2FN
 import pdb
 import copy
-from models.transformation import *
+from algorithm.models.transformation import *
 
 class QuantLlamaMLP(nn.Module):
     def __init__(

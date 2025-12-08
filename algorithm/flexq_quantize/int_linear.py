@@ -15,7 +15,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from flexq_quantize.quantizer import UniformAffineQuantizer
+from algorithm.flexq_quantize.quantizer import UniformAffineQuantizer
 
 class QuantLinear(nn.Module):
     """

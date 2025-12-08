@@ -14,9 +14,19 @@ class LMClass(BaseLM):
         super().__init__()
 
         self.args = args
-        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # choose device based on provided device_map to avoid unintended moves
+        device_map = getattr(args, "device_map", None)
+        if isinstance(device_map, str):
+            if device_map.lower().startswith("cuda"):
+                self._device = torch.device(device_map)
+            elif device_map.lower() == "cpu":
+                self._device = torch.device("cpu")
+            else:
+                self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        else:
+            self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model_name = args.model
-        self.batch_size_per_gpu = args.batch_size
+        self.batch_size_per_gpu = getattr(args, "batch_size", 1)
 
         self.model_config = args.model
 
@@ -28,12 +38,20 @@ class LMClass(BaseLM):
         # Load model with memory-efficient options: device_map='auto' places layers on available devices
         # and low_cpu_mem_usage=True reduces peak CPU memory during loading.
         # self.model = AutoModelForCausalLM.from_pretrained(args.model, config=config, device_map='cpu',torch_dtype=config.torch_dtype)
+        device_map = getattr(args, "device_map", "auto")
+        low_cpu = getattr(args, "low_cpu_mem_usage", True)
+        dtype = getattr(args, "torch_dtype", torch.float16)
+        if isinstance(dtype, str):
+            if dtype == "auto":
+                dtype = "auto"
+            else:
+                dtype = getattr(torch, dtype, torch.float16)
         self.model = AutoModelForCausalLM.from_pretrained(
             args.model,
             config=config,
-            device_map='auto',
-            low_cpu_mem_usage=True,
-            torch_dtype=torch.float16,
+            device_map=device_map,
+            low_cpu_mem_usage=low_cpu,
+            torch_dtype=dtype,
         )
         self.seqlen = self.model.config.max_position_embeddings
         self.model.eval()
