@@ -1,0 +1,3 @@
+[2025-12-09 04:43:46 root] (main.py 78): INFO load calibration from ./cache/testloader_llama_wikitext2_all.cache
+[2025-12-09 04:43:58 root] (main.py 120): INFO wikitext2 : 1.686330795288086
+[2025-12-09 04:44:08 root] (main.py 132): INFO {'wikitext2': 1.686330795288086, 'results': {'piqa': {'acc': 1.0, 'acc_stderr': 0.0, 'acc_norm': 0.9, 'acc_norm_stderr': 0.09999999999999999}}, 'versions': {'piqa': 0}, 'config': {'model': <algorithm.models.LMClass.LMClass object at 0x7f5263af8340>, 'model_args': None, 'num_fewshot': 0, 'limit': 10, 'bootstrap_iters': 100000, 'description_dict': None}}

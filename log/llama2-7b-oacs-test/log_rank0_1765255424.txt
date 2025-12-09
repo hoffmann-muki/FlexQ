@@ -1,0 +1,36 @@
+[2025-12-09 04:43:44 root] (flexqllm.py 78): INFO Starting ...
+[2025-12-09 04:43:44 root] (flexqllm.py 130): INFO === Start quantize layer 0 ===
+[2025-12-09 04:43:44 root] (flexqllm.py 130): INFO === Start quantize layer 1 ===
+[2025-12-09 04:43:44 root] (flexqllm.py 130): INFO === Start quantize layer 2 ===
+[2025-12-09 04:43:44 root] (flexqllm.py 130): INFO === Start quantize layer 3 ===
+[2025-12-09 04:43:44 root] (flexqllm.py 130): INFO === Start quantize layer 4 ===
+[2025-12-09 04:43:44 root] (flexqllm.py 130): INFO === Start quantize layer 5 ===
+[2025-12-09 04:43:45 root] (flexqllm.py 130): INFO === Start quantize layer 6 ===
+[2025-12-09 04:43:45 root] (flexqllm.py 130): INFO === Start quantize layer 7 ===
+[2025-12-09 04:43:45 root] (flexqllm.py 130): INFO === Start quantize layer 8 ===
+[2025-12-09 04:43:45 root] (flexqllm.py 130): INFO === Start quantize layer 9 ===
+[2025-12-09 04:43:45 root] (flexqllm.py 130): INFO === Start quantize layer 10 ===
+[2025-12-09 04:43:45 root] (flexqllm.py 130): INFO === Start quantize layer 11 ===
+[2025-12-09 04:43:45 root] (flexqllm.py 130): INFO === Start quantize layer 12 ===
+[2025-12-09 04:43:45 root] (flexqllm.py 130): INFO === Start quantize layer 13 ===
+[2025-12-09 04:43:45 root] (flexqllm.py 130): INFO === Start quantize layer 14 ===
+[2025-12-09 04:43:45 root] (flexqllm.py 130): INFO === Start quantize layer 15 ===
+[2025-12-09 04:43:45 root] (flexqllm.py 130): INFO === Start quantize layer 16 ===
+[2025-12-09 04:43:45 root] (flexqllm.py 130): INFO === Start quantize layer 17 ===
+[2025-12-09 04:43:45 root] (flexqllm.py 130): INFO === Start quantize layer 18 ===
+[2025-12-09 04:43:45 root] (flexqllm.py 130): INFO === Start quantize layer 19 ===
+[2025-12-09 04:43:45 root] (flexqllm.py 130): INFO === Start quantize layer 20 ===
+[2025-12-09 04:43:45 root] (flexqllm.py 130): INFO === Start quantize layer 21 ===
+[2025-12-09 04:43:45 root] (flexqllm.py 130): INFO === Start quantize layer 22 ===
+[2025-12-09 04:43:45 root] (flexqllm.py 130): INFO === Start quantize layer 23 ===
+[2025-12-09 04:43:45 root] (flexqllm.py 130): INFO === Start quantize layer 24 ===
+[2025-12-09 04:43:45 root] (flexqllm.py 130): INFO === Start quantize layer 25 ===
+[2025-12-09 04:43:45 root] (flexqllm.py 130): INFO === Start quantize layer 26 ===
+[2025-12-09 04:43:45 root] (flexqllm.py 130): INFO === Start quantize layer 27 ===
+[2025-12-09 04:43:45 root] (flexqllm.py 130): INFO === Start quantize layer 28 ===
+[2025-12-09 04:43:45 root] (flexqllm.py 130): INFO === Start quantize layer 29 ===
+[2025-12-09 04:43:45 root] (flexqllm.py 130): INFO === Start quantize layer 30 ===
+[2025-12-09 04:43:45 root] (flexqllm.py 130): INFO === Start quantize layer 31 ===
+[2025-12-09 04:43:46 root] (main.py 78): INFO load calibration from ./cache/testloader_llama_wikitext2_all.cache
+[2025-12-09 04:43:58 root] (main.py 120): INFO wikitext2 : 1.686330795288086
+[2025-12-09 04:44:08 root] (main.py 132): INFO {'wikitext2': 1.686330795288086, 'results': {'piqa': {'acc': 1.0, 'acc_stderr': 0.0, 'acc_norm': 0.9, 'acc_norm_stderr': 0.09999999999999999}}, 'versions': {'piqa': 0}, 'config': {'model': <algorithm.models.LMClass.LMClass object at 0x7f5263af8340>, 'model_args': None, 'num_fewshot': 0, 'limit': 10, 'bootstrap_iters': 100000, 'description_dict': None}}
