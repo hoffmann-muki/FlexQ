@@ -91,12 +91,27 @@ def get_piqa_prompts(nsamples, seed, seqlen, model):
     return loader, None
 
 
+def get_boolq_prompts(nsamples, seed, seqlen, model):
+    print("get_boolq")
+    dataset = load_dataset("boolq", split="validation")
+    tokenizer, pad_id = _default_tokenizer(model)
+    def format_fn(doc):
+        text = doc["passage"]
+        question = doc["question"]
+        return f"Passage: {text}\nQuestion: {question}\nAnswer:"
+    prompts = _get_prompt_texts(dataset, format_fn)
+    loader = _build_prompt_loader(prompts, tokenizer, nsamples, seed, seqlen, pad_id)
+    return loader, None
+
+
 def get_loaders(name, nsamples=128, seed=0, seqlen=2048, model="") -> Tuple:
     lower = name.lower()
     if "wikitext2" in lower:
         return get_wikitext2(nsamples, seed, seqlen, model)
     if "piqa" in lower:
         return get_piqa_prompts(nsamples, seed, seqlen, model)
+    if "boolq" in lower:
+        return get_boolq_prompts(nsamples, seed, seqlen, model)
     if "arc_easy" in lower:
         return get_arc_prompts(nsamples, seed, seqlen, model, "ARC-Easy")
     if "arc_challenge" in lower:

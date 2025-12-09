@@ -12,9 +12,11 @@ This script uses the adaptive flags that were added to `main.py` to enable the O
 import argparse
 import csv
 import time
+import math
 from pathlib import Path
 
 import torch
+from typing import Sequence
 
 from algorithm.datautils import get_loaders
 from algorithm.analysis.activation_stats import ActivationStatsHook
@@ -41,7 +43,8 @@ def profile_down_proj_layers(lm, dataloader, percentiles=(0.999, 0.9999), max_ba
 
     for i, lyr in enumerate(layer_list):
         if hasattr(lyr, "mlp") and hasattr(lyr.mlp, "down_proj"):
-            hook = ActivationStatsHook(name=f"layer_{i}", percentiles=list(percentiles))
+            # Capture INPUT to down_proj for smoothing and correct OACS profiling
+            hook = ActivationStatsHook(name=f"layer_{i}", percentiles=list(percentiles), capture_input=True)
             handle = lyr.mlp.down_proj.register_forward_hook(hook)
             hooks.append(hook)
             handles.append(handle)
@@ -54,11 +57,13 @@ def profile_down_proj_layers(lm, dataloader, percentiles=(0.999, 0.9999), max_ba
         device = lm.device
     lm.model.to(device)
 
+    print(f"Profiling up to {max_batches} batches on {len(hooks)} layers (device={device})...")
     batches_run = 0
     with torch.no_grad():
         for batch_idx, batch in enumerate(dataloader):
             if batch_idx >= max_batches:
                 break
+            print(f"  Running profiling batch {batch_idx + 1}/{max_batches}...")
             # dataloader yields (input_ids, attention_mask) or similar; try to find input ids
             if hasattr(batch, "input_ids"):
                 inputs = batch.input_ids.to(device)
@@ -94,11 +99,14 @@ def profile_down_proj_layers(lm, dataloader, percentiles=(0.999, 0.9999), max_ba
                     # fallback to calling model.model
                     _ = lm.model.model(inputs)
             batches_run += 1
+            print(f"    Completed batch {batches_run}")
 
     # collect summaries
     summaries = {}
+    channel_maxes = {}
     for hook, layer_idx in zip(hooks, layers):
         summaries[layer_idx] = hook.summary()
+        channel_maxes[layer_idx] = hook.per_channel_max
 
     # remove hooks
     for h in handles:
@@ -108,7 +116,113 @@ def profile_down_proj_layers(lm, dataloader, percentiles=(0.999, 0.9999), max_ba
     if old_device is not None:
         lm._device = old_device
 
-    return summaries
+    return summaries, channel_maxes
+
+
+def percentile_key(percentile: float) -> str:
+    return f"p{int(percentile * 10000)}"
+
+def percentile_name_to_value(name: str) -> float | None:
+    if name.startswith("p") and name[1:].isdigit():
+        return float(int(name[1:])) / 10000.0
+    return None
+
+
+def log_layer_stats(stats: dict[int, dict[str, float]], percentiles: Sequence[float], path: str | None) -> None:
+    if not path:
+        return
+    path_obj = Path(path)
+    path_obj.parent.mkdir(parents=True, exist_ok=True)
+    header = ["timestamp", "layer", "percentile", "stat", "value"]
+    file_exists = path_obj.exists()
+    with open(path_obj, "a", newline="") as fh:
+        writer = csv.writer(fh)
+        if not file_exists:
+            writer.writerow(header)
+        timestamp = time.time()
+        for layer_idx, layer_stats in sorted(stats.items()):
+            logged_keys = set()
+            for pct in percentiles:
+                key = percentile_key(pct)
+                if key in layer_stats:
+                    writer.writerow([timestamp, layer_idx, percentile_name_to_value(key), key, layer_stats[key]])
+                    logged_keys.add(key)
+            for key, value in sorted(layer_stats.items()):
+                if key in logged_keys:
+                    continue
+                writer.writerow([timestamp, layer_idx, percentile_name_to_value(key), key, value])
+
+
+def build_layer_clip_schedule(
+    stats: dict[int, dict[str, float]],
+    base_clip_pct: float,
+    target_percentile_key: str,
+    bonus_scale: float,
+    bonus_cap: float,
+    zero_shift: float,
+) -> dict[int, dict[str, float]]:
+    schedule: dict[int, dict[str, float]] = {}
+    for layer_idx, layer_stats in stats.items():
+        target_value = layer_stats.get(target_percentile_key, layer_stats.get("max", 0.0))
+        percentile_keys = [k for k in layer_stats.keys() if k.startswith("p")]
+        severity_key = max(percentile_keys, key=lambda k: float(k.lstrip("p") or 0), default=target_percentile_key)
+        severity_value = layer_stats.get(severity_key, target_value)
+        if target_value > 0:
+            severity = (severity_value + 1e-9) / (target_value + 1e-9)
+        else:
+            severity = 1.0
+        
+        # Use log scale for severity to handle extreme outliers without saturating immediately
+        log_severity = math.log(max(1.0, severity))
+        bonus = min(max(0.0, log_severity * bonus_scale), bonus_cap)
+        
+        # Cap at 0.9999 ONLY if we are actually trying to clip (base < 1.0).
+        # If base is 1.0 (baseline), we allow 1.0 to pass through.
+        if base_clip_pct >= 1.0:
+            adjusted_clip = 1.0
+        else:
+            adjusted_clip = min(0.9999, base_clip_pct + bonus)
+        
+        schedule[layer_idx] = {
+            "clip_percentile": adjusted_clip,
+            "zero_shift_scale": zero_shift,
+            "severity": severity,
+        }
+    return schedule
+
+
+def log_layer_schedule(
+    schedule: dict[int, dict[str, float]],
+    clip_pct: float,
+    zero_shift: float,
+    path: str | None,
+    target_key: str,
+) -> None:
+    if not path:
+        return
+    path_obj = Path(path)
+    path_obj.parent.mkdir(parents=True, exist_ok=True)
+    header = ["timestamp", "clip_percentile", "zero_shift", "layer", "layer_percentile", "adjusted_clip", "severity", "target_key"]
+    file_exists = path_obj.exists()
+    with open(path_obj, "a", newline="") as fh:
+        writer = csv.writer(fh)
+        if not file_exists:
+            writer.writerow(header)
+        timestamp = time.time()
+        target_percentile_value = percentile_name_to_value(target_key)
+        for layer_idx, entry in sorted(schedule.items()):
+            writer.writerow(
+                [
+                    timestamp,
+                    clip_pct,
+                    zero_shift,
+                    layer_idx,
+                    target_percentile_value,
+                    entry.get("clip_percentile"),
+                    entry.get("severity"),
+                    target_key,
+                ]
+            )
 
 
 def find_top_k_layers(stats: dict, percentile_key: str, top_k: int = 8):
@@ -121,11 +235,17 @@ def find_top_k_layers(stats: dict, percentile_key: str, top_k: int = 8):
     return [l for l, _ in vals[:top_k]]
 
 
-def run_sweep(args, layer_candidates, percentiles_to_try, zero_shifts_to_try):
+def run_sweep(
+    args,
+    layer_candidates,
+    percentiles_to_try,
+    zero_shifts_to_try,
+    layer_profiles,
+    channel_maxes=None,
+):
     out_path = Path(args.output_csv)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Write header
     header = [
         "timestamp",
         "clip_percentile",
@@ -139,10 +259,27 @@ def run_sweep(args, layer_candidates, percentiles_to_try, zero_shifts_to_try):
             writer = csv.writer(fh)
             writer.writerow(header)
 
+    target_key = percentile_key(args.layer_scheduler_target_percentile)
+
     for clip_pct in percentiles_to_try:
         for zero_scale in zero_shifts_to_try:
+            layer_schedule = build_layer_clip_schedule(
+                layer_profiles,
+                clip_pct,
+                target_key,
+                args.layer_scheduler_bonus_scale,
+                args.layer_scheduler_bonus_cap,
+                zero_scale,
+            )
+            log_layer_schedule(
+                layer_schedule,
+                clip_pct,
+                zero_scale,
+                args.layer_schedule_path,
+                target_key,
+            )
+
             t0 = time.time()
-            # create fresh args-like namespace to pass into LMClass and quantizer
             class A:
                 pass
 
@@ -175,13 +312,12 @@ def run_sweep(args, layer_candidates, percentiles_to_try, zero_shifts_to_try):
             a.flex_linear_quant = args.flex_linear_quant
             a.device_map = args.device_map
             a.low_cpu_mem_usage = args.low_cpu_mem_usage
-            # pass through the normalized torch dtype (either a torch.dtype or 'auto')
             a.torch_dtype = args.torch_dtype
             a.adaptive_clip_down_proj = True
             a.adaptive_clip_percentile = clip_pct
             a.adaptive_zero_shift_scale = zero_scale
+            a.layer_clip_schedule = layer_schedule
 
-            # prepare quantization parameter dicts (same logic as main.py)
             a.weight_quant_params = {
                 "n_bits": a.wbits,
                 "per_channel_axes": [0],
@@ -233,17 +369,18 @@ def run_sweep(args, layer_candidates, percentiles_to_try, zero_shifts_to_try):
             a.v_quant_params = {"n_bits": 16, "per_channel_axes": [], "symmetric": a.symmetric, "dynamic_method": a.a_dynamic_method}
             a.p_quant_params = {"n_bits": 16, "metric": "fix0to1"}
 
-            # instantiate model, quantize, evaluate
             lm = LMClass(a)
             lm.seqlen = 2048
             lm.model.eval()
             for p in lm.model.parameters():
                 p.requires_grad = False
+            
+            # Apply smoothing if enabled (using the channel_maxes collected during profiling)
+            if args.enable_smoothing and channel_maxes is not None:
+                apply_smoothing(lm, channel_maxes, alpha=args.smoothing_alpha)
 
-            # run quantization (in-place)
             flexqllm(lm, a, utils.create_logger(Path(a.output_dir)))
 
-            # run evaluation (small scale). We call evaluate from main which returns a dict
             results = evaluate(lm, a, utils.create_logger(Path(a.output_dir)))
             ppl = results.get("wikitext2", None)
             task_metrics = []
@@ -251,7 +388,6 @@ def run_sweep(args, layer_candidates, percentiles_to_try, zero_shifts_to_try):
                 for metric, value in metrics.items():
                     if metric.endswith("_stderr"):
                         continue
-                    # format numbers consistently
                     if isinstance(value, float):
                         task_metrics.append(f"{task}.{metric}={value:.6g}")
                     else:
@@ -268,6 +404,76 @@ def run_sweep(args, layer_candidates, percentiles_to_try, zero_shifts_to_try):
             )
 
 
+def apply_smoothing(lm, channel_maxes, alpha=0.5):
+    """
+    Apply SmoothQuant-like smoothing to down_proj layers.
+    Scales down activations (by scaling up up_proj weights) and scales up down_proj weights.
+    """
+    print(f"Applying smoothing to down_proj layers (alpha={alpha})...")
+    if hasattr(lm.model.model, "layers"): 
+        layer_list = lm.model.model.layers
+    elif hasattr(lm.model.model, "decoder") and hasattr(lm.model.model.decoder, "layers"):
+        layer_list = lm.model.model.decoder.layers
+    else:
+        return
+
+    for i, lyr in enumerate(layer_list):
+        if i not in channel_maxes or channel_maxes[i] is None:
+            continue
+        
+        # act_max is [intermediate_size]
+        act_max = channel_maxes[i].to(lyr.mlp.down_proj.weight.device)
+        
+        # w_max is [intermediate_size] (max over hidden_size dim)
+        # down_proj.weight is [hidden, interm]
+        w_max = lyr.mlp.down_proj.weight.abs().max(dim=0).values
+        
+        # Avoid division by zero
+        act_max = act_max.clamp(min=1e-5)
+        w_max = w_max.clamp(min=1e-5)
+        
+        # Calculate scale: s = act_max^alpha / w_max^(1-alpha)
+        # With alpha=0.05, we saw scales ~12.0, which is still too high for W6.
+        # We need to dampen the scale significantly.
+        # Let's try a much gentler scaling: s = (act_max / w_max)^alpha
+        # This is mathematically equivalent to the previous formula if we just change alpha,
+        # but let's be explicit about the goal: we want s to be close to 1.0.
+        
+        # Current observation: act_max >> w_max, so ratio is large (e.g. 100).
+        # 100^0.05 = 1.25. 
+        # But we saw mean=12.0? That implies ratio is HUGE (e.g. 10^20?) or my math is off.
+        # Wait, previous formula was: s = act^alpha / w^(1-alpha)
+        # If act=100, w=0.1, alpha=0.05:
+        # s = 100^0.05 / 0.1^0.95 = 1.25 / 0.11 = 11.3
+        # This explains why we got ~11-12.
+        
+        # NEW FORMULA: s = (act_max / w_max).pow(alpha)
+        # If act=100, w=0.1, alpha=0.05 => (1000)^0.05 = 1.41
+        # This is much safer.
+        
+        ratio = (act_max / w_max).clamp(min=1e-5)
+        scale = ratio.pow(alpha).clamp(min=1e-5)
+        
+        # Safety: Clamp scale to be within [0.5, 2.0] to prevent any extreme distortion
+        scale = scale.clamp(min=0.5, max=2.0)
+        
+        print(f"  Layer {i}: scale min={scale.min():.4f}, max={scale.max():.4f}, mean={scale.mean():.4f}")
+
+        # Apply scale:
+        # input' = input / scale
+        # weight' = weight * scale
+        
+        # Scale down_proj weights (weight * scale)
+        # weight is [hidden, interm], scale is [interm]
+        lyr.mlp.down_proj.weight.data.mul_(scale.view(1, -1))
+        
+        # Scale up_proj weights (weight / scale) to produce input / scale
+        # up_proj weight is [interm, hidden], scale is [interm]
+        lyr.mlp.up_proj.weight.data.div_(scale.view(-1, 1))
+        
+    print("Smoothing applied successfully.")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=str, required=True)
@@ -280,7 +486,44 @@ def main():
     parser.add_argument("--top_k", type=int, default=8)
     parser.add_argument("--percentiles", nargs='+', type=float, default=[0.995, 0.9975, 0.999, 0.9995, 0.9999])
     parser.add_argument("--zero_scales", nargs='+', type=float, default=[0.0, 0.01, 0.02, 0.05])
-    parser.add_argument("--max_profile_batches", type=int, default=8)
+    parser.add_argument("--max_profile_batches", type=int, default=4)
+    parser.add_argument(
+        "--layer_stats_percentiles",
+        nargs='+',
+        type=float,
+        default=[0.9, 0.95, 0.99, 0.999, 0.9999],
+        help="percentiles gathered during layer profiling",
+    )
+    parser.add_argument(
+        "--layer_stats_path",
+        type=str,
+        default="algorithm/oacs_layer_stats.csv",
+        help="path to append per-layer stats; leave empty to disable",
+    )
+    parser.add_argument(
+        "--layer_schedule_path",
+        type=str,
+        default="algorithm/oacs_layer_schedule.csv",
+        help="path to append per-sweep layer schedule entries; leave empty to disable",
+    )
+    parser.add_argument(
+        "--layer_scheduler_target_percentile",
+        type=float,
+        default=0.9,
+        help="base percentile used to compare tail severity when building per-layer schedules",
+    )
+    parser.add_argument(
+        "--layer_scheduler_bonus_scale",
+        type=float,
+        default=0.05,
+        help="scale factor for clipping bonus based on tail severity",
+    )
+    parser.add_argument(
+        "--layer_scheduler_bonus_cap",
+        type=float,
+        default=0.1,
+        help="maximum additional percentile fraction allocated to bad layers",
+    )
     parser.add_argument("--wbits", type=int, default=6)
     parser.add_argument("--abits", type=int, default=6)
     parser.add_argument("--w_group_size", type=int, default=None)
@@ -289,7 +532,8 @@ def main():
     parser.add_argument("--disable_zero_point", action="store_true")
     parser.add_argument("--flex_linear_quant", action="store_true")
     parser.add_argument("--net", type=str, default=None)
-    parser.add_argument("--device_map", type=str, default="cpu")
+    parser.add_argument("--device_map", type=str, default=None,
+        help="HuggingFace device_map to load the model on (defaults to GPU when available)")
     parser.add_argument("--low_cpu_mem_usage", action="store_true", help="keep huggingface low memory flag when loading the model")
     parser.add_argument("--torch_dtype", type=str, default="float16")
     parser.add_argument("--a_dynamic_method", type=str, default="per_token", choices=["per_token", "per_group"]) 
@@ -298,12 +542,18 @@ def main():
     parser.add_argument("--tasks", default="piqa")
     parser.add_argument("--num_fewshot", type=int, default=0)
     parser.add_argument("--limit", type=int, default=-1)
+    parser.add_argument("--enable_smoothing", action="store_true", help="Enable SmoothQuant-like activation smoothing")
+    parser.add_argument("--smoothing_alpha", type=float, default=0.5, help="Alpha parameter for smoothing (0.5 balances weights and activations)")
 
     args = parser.parse_args()
 
     # ensure compatibility with LMClass which expects this arg
     if not hasattr(args, "attn_implementation"):
         args.attn_implementation = "eager"
+
+    if args.device_map is None:
+        args.device_map = "cuda:0" if torch.cuda.is_available() else "cpu"
+        print(f"Defaulting --device_map to {args.device_map}")
 
     # HuggingFace requires `low_cpu_mem_usage=True` when passing a device_map.
     # If the user supplied a device_map but didn't enable the low-memory flag,
@@ -329,6 +579,9 @@ def main():
     if args.cache_dir:
         Path(args.cache_dir).mkdir(parents=True, exist_ok=True)
 
+    args.layer_stats_path = args.layer_stats_path or None
+    args.layer_schedule_path = args.layer_schedule_path or None
+
     # get a small calibration loader
     dataloader, testloader = get_loaders(args.dataset, seed=args.seed, model=args.model, seqlen=2048)
 
@@ -336,15 +589,20 @@ def main():
     print("Profiling activations to find sensitive layers...")
     lm = LMClass(args)
     lm.seqlen = 2048
-    profiles = profile_down_proj_layers(lm, dataloader, percentiles=(0.999, 0.9999), max_batches=args.max_profile_batches)
+    profiles, channel_maxes = profile_down_proj_layers(lm, dataloader, percentiles=tuple(args.layer_stats_percentiles), max_batches=args.max_profile_batches)
+
+    if args.enable_smoothing:
+        apply_smoothing(lm, channel_maxes, alpha=args.smoothing_alpha)
 
     # choose top-k by p9999 if available else p999
     key = "p9999" if any("p9999" in s for s in profiles.values()) else "p999"
     top_k_layers = find_top_k_layers(profiles, key, top_k=args.top_k)
     print("Top-k sensitive layers:", top_k_layers)
 
+    log_layer_stats(profiles, args.layer_stats_percentiles, args.layer_stats_path)
+
     # run a small grid sweep using these top layers as candidates (we pass list for record)
-    run_sweep(args, top_k_layers, args.percentiles, args.zero_scales)
+    run_sweep(args, top_k_layers, args.percentiles, args.zero_scales, profiles, channel_maxes)
 
 
 if __name__ == "__main__":

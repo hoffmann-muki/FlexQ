@@ -23,15 +23,11 @@ import math
 
 CLIPMIN = 1e-5
 
-
-
-
 def round_ste(x: torch.Tensor):
     """
     Implement Straight-Through Estimator for rounding operation.
     """
     return (x.round() - x).detach() + x
-
 
 
 class UniformAffineQuantizer(nn.Module):
@@ -140,7 +136,8 @@ class UniformAffineQuantizer(nn.Module):
             x = x.mul_(2**self.n_bits-1).round_().div_(2**self.n_bits-1)
 
         if self.dynamic_method == "per_token" or self.dynamic_method == "per_channel" or self.dynamic_method == "per_group":
-            self.per_token_dynamic_calibration(x)
+            # Use the clipped tensor for quantization to avoid overflow (Inf) when dividing by small scales
+            x = self.per_token_dynamic_calibration(x)
         else:
             raise NotImplementedError()   
 
@@ -149,6 +146,9 @@ class UniformAffineQuantizer(nn.Module):
 
     def per_token_dynamic_calibration(self, x):
         x = self.apply_adaptive_clipping(x)
+        # Keep a reference to the clipped tensor (original shape) to return it
+        x_clipped = x
+        
         if self.group_size:
             if self.deficiency == 0:
                 x = x.reshape(-1,self.group_size)
@@ -158,24 +158,39 @@ class UniformAffineQuantizer(nn.Module):
                 x = x.reshape(-1,self.group_size)
         reduce_shape = [-1]
         xmin = x.amin(reduce_shape, keepdim=True)
-        xmax =  x.amax(reduce_shape, keepdim=True)
+        xmax = x.amax(reduce_shape, keepdim=True)
+        
+        # Safety: ensure no NaNs propagate
+        xmin = torch.nan_to_num(xmin)
+        xmax = torch.nan_to_num(xmax)
+
         if self.symmetric:
             abs_max = torch.max(xmax.abs(),xmin.abs())
             scale = abs_max / (2**(self.n_bits-1)-1)
+            scale = torch.nan_to_num(scale, nan=CLIPMIN)
             self.scale = scale.clamp(min=CLIPMIN, max=1e4)
             zero_point = (2**(self.n_bits-1)-1)*torch.ones_like(self.scale)
         else:
             range = xmax - xmin
+            range = torch.nan_to_num(range, nan=CLIPMIN)
+            # Avoid zero range which causes NaN scale
+            range = range.clamp(min=CLIPMIN)
             if self.n_bits == 2 or self.n_bits == 1:
                 scale = range / (2**self.n_bits)
             else:
                 scale = range / (2**self.n_bits-1)
+            
+            scale = torch.nan_to_num(scale, nan=CLIPMIN)
             self.scale = scale.clamp(min=CLIPMIN, max=1e4)
             zero_point = -(xmin) / (self.scale)
+            zero_point = torch.nan_to_num(zero_point)
+
         if self.disable_zero_point:
             self.round_zero_point = None
         else:
             self.round_zero_point = zero_point.clamp(min=-1e4, max=1e4).round()
+            
+        return x_clipped
         
     def register_scales_and_zeros(self):
         self.register_buffer('scales', self.scale)
@@ -188,6 +203,8 @@ class UniformAffineQuantizer(nn.Module):
         if self.clip_percentile is None and self.zero_shift_scale == 0.0:
             return x
 
+        # Ensure no NaNs in input
+        x = torch.nan_to_num(x)
         clipped = x
         if self.clip_percentile is not None:
             pct = max(0.0, min(1.0, self.clip_percentile))
@@ -197,6 +214,12 @@ class UniformAffineQuantizer(nn.Module):
                 flat = clipped.abs().flatten()
                 # ensure quantile compute uses a floating dtype
                 flat = flat.float()
+                # torch.quantile on CUDA has a limit of ~16M elements. 
+                # We downsample to 1M to be safe and fast.
+                max_elems = 1_000_000
+                if flat.numel() > max_elems:
+                    stride = flat.numel() // max_elems + 1
+                    flat = flat[::stride].contiguous()
                 clip_thr = torch.quantile(flat, torch.tensor(pct, dtype=flat.dtype, device=flat.device))
             clipped = clipped.clamp(-clip_thr, clip_thr)
             self.last_clip_threshold = clip_thr
@@ -206,5 +229,5 @@ class UniformAffineQuantizer(nn.Module):
             shift_value = shift * self.zero_shift_scale
             clipped = clipped - shift_value
             self.last_zero_shift = shift_value
-
+        
         return clipped

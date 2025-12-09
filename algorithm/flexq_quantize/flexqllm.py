@@ -45,6 +45,31 @@ def add_new_module(name, original_module, added_module):
     else:
         setattr(original_module, name, added_module)     
 
+
+def apply_layer_quant_schedule(qlayer, schedule_entry, layer_idx: int, logger=None):
+    if not schedule_entry:
+        return
+    mlp = getattr(qlayer, 'mlp', None)
+    if mlp is None or not hasattr(mlp, 'down_proj'):
+        return
+    quantizer = getattr(mlp.down_proj, 'act_quantizer', None)
+    if quantizer is None:
+        return
+
+    clip_pct = schedule_entry.get('clip_percentile')
+    if clip_pct is not None:
+        quantizer.clip_percentile = clip_pct
+    zero_shift = schedule_entry.get('zero_shift_scale')
+    if zero_shift is not None:
+        quantizer.zero_shift_scale = zero_shift
+    if logger is not None and hasattr(logger, 'debug'):
+        clip_str = f"{clip_pct:.4f}" if clip_pct is not None else "None"
+        zero_str = f"{zero_shift:.4f}" if zero_shift is not None else "None"
+        severity = schedule_entry.get('severity') or 1.0
+        logger.debug(
+            f"Layer {layer_idx} schedule: clip_pct={clip_str} zero_shift={zero_str} severity={severity:.2f}"
+        )
+
 def flexqllm(
     lm,
     args,
@@ -106,6 +131,10 @@ def flexqllm(
         # Move only this layer to `quant_dev` for quantization to avoid OOM
         layer = layers[i].to(quant_dev)
         qlayer = DecoderLayer(lm.model.config, layer, args)
+        schedule_entry = None
+        if hasattr(args, 'layer_clip_schedule'):
+            schedule_entry = args.layer_clip_schedule.get(i)
+        apply_layer_quant_schedule(qlayer, schedule_entry, i, logger)
         qlayer = qlayer.to(quant_dev)
 
         set_quant_state(qlayer, weight_quant=True, act_quant=True)
