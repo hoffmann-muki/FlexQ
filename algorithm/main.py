@@ -83,6 +83,10 @@ def evaluate(lm, args, logger):
                     model=args.model,
                     seqlen=lm.seqlen,
                 )
+                # ensure parent directory exists before saving cached testloader
+                cache_dir_parent = os.path.dirname(cache_testloader)
+                if cache_dir_parent and not os.path.exists(cache_dir_parent):
+                    os.makedirs(cache_dir_parent, exist_ok=True)
                 torch.save(testloader, cache_testloader)
             if "c4" in dataset:
                 testenc = testloader

@@ -30,8 +30,29 @@ class QuantMatMul(nn.Module):
         # de-activate the quantized forward default
         self.use_act_quant = False
         # initialize quantizer
-        self.x1_quantizer = UniformAffineQuantizer(**x1_quant_params)
-        self.x2_quantizer = UniformAffineQuantizer(**x2_quant_params)
+        # Remove any DuQuant-specific or unknown keys that this UniformAffineQuantizer
+        # implementation does not accept to avoid TypeError when params are reused
+        # between DuQuant and FlexQ code paths.
+        def _sanitize_params(params: dict):
+            if not isinstance(params, dict):
+                return params
+            params = dict(params)
+            for k in [
+                "rotate",
+                "quant_method",
+                "block_size",
+                "max_rotation_step",
+                "permutation_times",
+                "swc",
+                "lac",
+                "lwc",
+                "act_group_size",
+            ]:
+                params.pop(k, None)
+            return params
+
+        self.x1_quantizer = UniformAffineQuantizer(**_sanitize_params(x1_quant_params))
+        self.x2_quantizer = UniformAffineQuantizer(**_sanitize_params(x2_quant_params))
         self.matmul_func = matmul_func
         # initialize quant flag
         self.x1_qunat_flag = False
