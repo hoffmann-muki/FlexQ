@@ -301,7 +301,7 @@ def run_sweep(
             
                     # ensured above; remove duplicate
             if args.enable_smoothing and channel_maxes is not None:
-                apply_smoothing(lm, channel_maxes, alpha=args.smoothing_alpha)
+                apply_smoothing(lm, channel_maxes, alpha=args.smoothing_alpha, sensitive_layers=layer_candidates)
 
             flexqllm(lm, a, utils.create_logger(Path(a.output_dir)))
 
@@ -326,7 +326,7 @@ def run_sweep(
             logger.info(f"Tried clip_pct={clip_pct}, zero_scale={zero_scale} => PPL={ppl}  task_metrics={metrics_str} (took {elapsed:.1f}s)")
 
 
-def apply_smoothing(lm, channel_maxes, alpha=0.5):
+def apply_smoothing(lm, channel_maxes, alpha=0.5, sensitive_layers: list | None = None):
     """
     Apply SmoothQuant-like smoothing to down_proj layers.
     Scales down activations (by scaling up up_proj weights) and scales up down_proj weights.
@@ -340,6 +340,9 @@ def apply_smoothing(lm, channel_maxes, alpha=0.5):
         return
 
     for i, lyr in enumerate(layer_list):
+        # If sensitive_layers is provided, only apply smoothing to those layers
+        if sensitive_layers is not None and i not in sensitive_layers:
+            continue
         if i not in channel_maxes or channel_maxes[i] is None:
             continue
         
@@ -592,9 +595,9 @@ def main():
         args.sensitive_layers = top_k_layers
         logger.info(f"Sensitive layers for DuQuant: {top_k_layers}")
         
-        # Apply smoothing if enabled
+        # Apply smoothing if enabled (only to DuQuant-identified sensitive layers)
         if args.enable_smoothing:
-            apply_smoothing(lm, channel_maxes, alpha=args.smoothing_alpha)
+            apply_smoothing(lm, channel_maxes, alpha=args.smoothing_alpha, sensitive_layers=args.sensitive_layers)
         
         # Collect scales
         act_scales = get_act_scales(lm.model, dataloader, num_samples=args.nsamples)
@@ -740,13 +743,14 @@ def main():
     lm.seqlen = 2048
     profiles, channel_maxes = profile_down_proj_layers(lm, dataloader, percentiles=tuple(args.layer_stats_percentiles), max_batches=args.max_profile_batches)
 
-    if args.enable_smoothing:
-        apply_smoothing(lm, channel_maxes, alpha=args.smoothing_alpha)
-
     # choose top-k by p9999 if available else p999
     key = "p9999" if any("p9999" in s for s in profiles.values()) else "p999"
     top_k_layers = find_top_k_layers(profiles, key, top_k=args.top_k)
     logger.info("Top-k sensitive layers: %s", top_k_layers)
+
+    # Apply smoothing to the identified sensitive layers if requested
+    if args.enable_smoothing:
+        apply_smoothing(lm, channel_maxes, alpha=args.smoothing_alpha, sensitive_layers=top_k_layers)
 
     log_layer_stats(profiles, args.layer_stats_percentiles, args.layer_stats_path)
 

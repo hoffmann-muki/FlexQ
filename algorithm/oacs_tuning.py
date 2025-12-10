@@ -312,7 +312,7 @@ def run_sweep(
             
             # ensured above; remove duplicate
             if args.enable_smoothing and channel_maxes is not None:
-                apply_smoothing(lm, channel_maxes, alpha=args.smoothing_alpha)
+                apply_smoothing(lm, channel_maxes, alpha=args.smoothing_alpha, sensitive_layers=layer_candidates)
 
             flexqllm(lm, a, utils.create_logger(Path(a.output_dir)))
 
@@ -339,7 +339,7 @@ def run_sweep(
             )
 
 
-def apply_smoothing(lm, channel_maxes, alpha=0.5):
+def apply_smoothing(lm, channel_maxes, alpha=0.5, sensitive_layers: list | None = None):
     """
     Apply SmoothQuant-like smoothing to down_proj layers.
     Scales down activations (by scaling up up_proj weights) and scales up down_proj weights.
@@ -353,6 +353,9 @@ def apply_smoothing(lm, channel_maxes, alpha=0.5):
         return
 
     for i, lyr in enumerate(layer_list):
+        # If sensitive_layers is provided, only apply smoothing to those layers
+        if sensitive_layers is not None and i not in sensitive_layers:
+            continue
         if i not in channel_maxes or channel_maxes[i] is None:
             continue
         
@@ -678,9 +681,6 @@ def main():
     lm.seqlen = 2048
     profiles, channel_maxes = profile_down_proj_layers(lm, dataloader, percentiles=tuple(args.layer_stats_percentiles), max_batches=args.max_profile_batches)
 
-    if args.enable_smoothing:
-        apply_smoothing(lm, channel_maxes, alpha=args.smoothing_alpha)
-
     # choose top-k by p9999 if available else p999
     key = "p9999" if any("p9999" in s for s in profiles.values()) else "p999"
     if args.enable_clipping:
@@ -689,6 +689,10 @@ def main():
     else:
         top_k_layers = find_top_k_layers(profiles, key, top_k=args.top_k)
     logger.info("Top-k sensitive layers: %s", top_k_layers)
+
+    # Apply smoothing only to the identified sensitive layers when requested
+    if args.enable_smoothing:
+        apply_smoothing(lm, channel_maxes, alpha=args.smoothing_alpha, sensitive_layers=top_k_layers)
 
     log_layer_stats(profiles, args.layer_stats_percentiles, args.layer_stats_path)
 
