@@ -8,33 +8,48 @@ Note that current codebase is for efficiency evaluation. We use random weights t
 
 Please complete the FasterTransformer compilation (Make sure you install MPI):
 ```
-cd ./FlexQ/e2e
+```markdown
+# FasterTransformer — End-to-end evaluation (FlexQ)
+
+This directory contains a fork of the FasterTransformer evaluation harness adapted for FlexQ performance experiments. It is intended for latency and throughput measurements; the reference build may use synthetic or random weights for benchmarking.
+
+Build
+
+1. Ensure MPI and required build tools are installed on your system.
+2. From the repository root run:
+
+```bash
+cd e2e
 bash build.sh
-``` 
-
-Modify the evaluation configuration:
-```
-# For LLaMA model, modify: e2e/examples/cpp/llama/llama_config.ini
-# For OPT model, modify: e2e/examples/cpp/multi_gpu_gpt/gpt_config.ini
-
-The following are the precision parameter settings for different baselines:
-FP16:               int8_mode=0
-W8A16 (CUTLASS):    int8_mode=1
-W8A8 (SmoothQuant): int8_mode=2
-W6Ax (FlexQ):       int8_mode=5
-Additionally, for multi-GPU testing, you need to modify the tensor_para_size parameter (set it to the number of GPUs).
 ```
 
-Run e2e efficiency evaluation:
-```
-cd build_release
+Configuration
 
-# For single-GPU LLaMA model evaluation
+- Edit the appropriate model config file for your test: for LLaMA use `e2e/examples/cpp/llama/llama_config.ini`; for OPT use `e2e/examples/cpp/multi_gpu_gpt/gpt_config.ini`.
+- Precision mapping used by the examples (config field `int8_mode`):
+	- `0` = FP16
+	- `1` = W8A16 (CUTLASS)
+	- `2` = W8A8 (SmoothQuant)
+	- `5` = W6Ax (FlexQ)
+- For multi-GPU runs, set `tensor_para_size` to the number of GPUs.
+
+Run example
+
+From the build output directory (typically `build_release`):
+
+```bash
+# single-GPU LLaMA example
 ./bin/llama_example
 
-# For single-GPU OPT model evaluation
+# single-GPU OPT example
 ./bin/multi_gpu_gpt_example
 
-# For multi-GPU evaluation
+# multi-GPU example (MPI)
 mpirun -n 2 ./bin/llama_example
+```
+
+Notes
+
+- This harness focuses on performance metrics. For functional accuracy or end-to-end evaluation with real weights and datasets, replace synthetic random weights with a real model checkpoint and provide appropriate input data.
+- Check the example config files and the `examples` subdirectories for detailed options and model-specific parameters.
 ```

@@ -128,8 +128,20 @@ def flexqllm(
 
     for i in range(len(layers)):
         logger.info(f"=== Start quantize layer {i} ===")
+        # If this layer was already processed by DuQuant, skip re-quantizing it with FlexQ.
+        orig_layer = layers[i]
+        if getattr(orig_layer, '_duquant_processed', False):
+            logger.info(f"Skipping layer {i} (DuQuant processed)")
+            # ensure the layer lives on the load device for later evaluation
+            try:
+                layers[i] = orig_layer.to(load_dev)
+            except Exception:
+                layers[i] = orig_layer.to("cpu")
+            if quant_dev.type == "cuda":
+                torch.cuda.empty_cache()
+            continue
         # Move only this layer to `quant_dev` for quantization to avoid OOM
-        layer = layers[i].to(quant_dev)
+        layer = orig_layer.to(quant_dev)
         qlayer = DecoderLayer(lm.model.config, layer, args)
         schedule_entry = None
         if hasattr(args, 'layer_clip_schedule'):

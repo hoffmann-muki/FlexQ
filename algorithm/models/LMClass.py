@@ -7,6 +7,9 @@ from torch import nn
 import torch
 from tqdm import tqdm
 import pdb
+import logging
+
+logger = logging.getLogger(__name__)
 
 class LMClass(BaseLM):
     def __init__(self, args):
@@ -56,7 +59,7 @@ class LMClass(BaseLM):
         self.seqlen = self.model.config.max_position_embeddings
         self.model.eval()
         self.vocab_size = self.tokenizer.vocab_size
-        print("vocab size: ", self.vocab_size)
+        logger.info("vocab size: %s", self.vocab_size)
 
     @property
     def eot_token(self) -> str:
@@ -77,7 +80,7 @@ class LMClass(BaseLM):
 
     @property
     def max_gen_toks(self):
-        print("max_gen_toks fn")
+        logger.debug("max_gen_toks called")
         return 256
 
     @property

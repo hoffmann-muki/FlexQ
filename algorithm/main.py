@@ -1,5 +1,6 @@
 import os
 import sys
+import logging
 import random
 import numpy as np
 from algorithm.models.LMClass import LMClass
@@ -42,6 +43,11 @@ net_choices = [
 @torch.no_grad()
 def evaluate(lm, args, logger):
     results = {}
+    # Attach activation memory hooks (lightweight). These collect per-forward output sizes.
+    try:
+        _handles, _act_stats = utils.attach_activation_memory_hooks(lm.model)
+    except Exception:
+        _handles, _act_stats = [], {'peak_bytes': 0, 'per_layer_peak': {}, 'current_bytes': 0}
     if args.multigpu:
         if "opt" in args.net.lower():
             map_layers_to_multi_gpus(lm.model.model.decoder.layers)
@@ -98,14 +104,56 @@ def evaluate(lm, args, logger):
             lm.model.config.use_cache = False
             lm.model.eval()
             nlls = []
+            total_tokens = 0
+            total_forward_time = 0.0
+            total_gpu_activation_peak = 0
             for i in tqdm(range(nsamples)):
                 batch = testenc[:, (i * lm.seqlen) : ((i + 1) * lm.seqlen)].to(lm.device)
+                # Reset per-forward activation accumulator
+                utils.reset_activation_current(_act_stats)
+
+                # Prepare timing and GPU peak-memory measurement
+                use_cuda = torch.cuda.is_available() and isinstance(lm.device, str) and lm.device.startswith("cuda")
+                if use_cuda:
+                    try:
+                        torch.cuda.reset_peak_memory_stats(lm.device)
+                    except Exception:
+                        pass
+                    baseline_alloc = torch.cuda.memory_allocated(lm.device)
+                    start_ev = torch.cuda.Event(enable_timing=True)
+                    end_ev = torch.cuda.Event(enable_timing=True)
+                    start_ev.record()
+                else:
+                    t0 = time.perf_counter()
+
+                # Forward (model body)
                 if "opt" in args.net.lower():
                     outputs = lm.model.model.decoder(batch)
                 elif "llama" in args.net.lower():
                     outputs = lm.model.model(batch)
+
+                # Include lm_head in the measured work to reflect end-to-end inference cost
                 hidden_states = outputs[0]
                 logits = lm.model.lm_head(hidden_states)
+
+                if use_cuda:
+                    end_ev.record()
+                    end_ev.synchronize()
+                    ft = start_ev.elapsed_time(end_ev) / 1000.0
+                    try:
+                        peak_alloc = torch.cuda.max_memory_allocated(lm.device)
+                        gpu_activation_peak = int(max(0, peak_alloc - baseline_alloc))
+                    except Exception:
+                        gpu_activation_peak = 0
+                else:
+                    ft = time.perf_counter() - t0
+                    gpu_activation_peak = 0
+
+                total_forward_time += ft
+                total_tokens += int(batch.numel())
+                if gpu_activation_peak > total_gpu_activation_peak:
+                    total_gpu_activation_peak = gpu_activation_peak
+
                 shift_logits = logits[:, :-1, :]
                 shift_labels = testenc[:, (i * lm.seqlen) : ((i + 1) * lm.seqlen)][
                     :, 1:
@@ -122,6 +170,28 @@ def evaluate(lm, args, logger):
 
             ppl = torch.exp(torch.stack(nlls).sum() / (nsamples * lm.seqlen))
             logger.info(f'{dataset} : {ppl.item()}')
+            # Report activation memory and throughput
+            hook_peak_bytes = int(_act_stats.get('peak_bytes', 0))
+            per_layer_peak = _act_stats.get('per_layer_peak', {})
+            tput = float('nan')
+            if total_forward_time > 0:
+                tput = total_tokens / total_forward_time
+            results['activation_hook_peak_bytes'] = hook_peak_bytes
+            # Summarize per-layer peaks: report max and count of layers with peaks > 0
+            if per_layer_peak:
+                max_per_layer = max(per_layer_peak.values())
+                num_layers_with_peaks = len([v for v in per_layer_peak.values() if v > 0])
+            else:
+                max_per_layer = 0
+                num_layers_with_peaks = 0
+            results['activation_per_layer_max_hook_peak_bytes'] = max_per_layer
+            results['activation_num_layers_with_peaks'] = num_layers_with_peaks
+            results['activation_gpu_peak_bytes'] = int(total_gpu_activation_peak)
+            results['throughput_tokens_per_sec'] = tput
+            logger.info(f"Activation hook-peak (bytes): {hook_peak_bytes}")
+            logger.info(f"Activation per-layer max hook-peak (bytes): {max_per_layer}")
+            logger.info(f"Activation GPU peak increase (bytes): {total_gpu_activation_peak}")
+            logger.info(f"Throughput (tokens/sec): {tput:.2f}")
             lm.model.config.use_cache = use_cache
             results[dataset] = ppl.item()
     
@@ -163,6 +233,11 @@ def evaluate(lm, args, logger):
                 logger.info("Average accuracy {:.4f} - {}".format(cat_acc, cat))
             weighted_acc = np.mean(all_cors)
             logger.info("Average accuracy: {:.4f}".format(weighted_acc))               
+    # remove hooks if attached
+    try:
+        utils.remove_hooks(_handles)
+    except Exception:
+        pass
     return results
     
 
@@ -222,7 +297,7 @@ def main():
     # If the user supplied a device_map but didn't enable the low-memory flag,
     # enable it automatically to avoid from_pretrained errors.
     if getattr(args, "device_map", None) is not None and not getattr(args, "low_cpu_mem_usage", False):
-        print("Note: enabling --low_cpu_mem_usage because --device_map was provided")
+        logging.getLogger(__name__).info("Note: enabling --low_cpu_mem_usage because --device_map was provided")
         args.low_cpu_mem_usage = True
 
     # Normalize torch_dtype: allow user to pass strings like 'float16' or 'auto'
@@ -234,7 +309,7 @@ def main():
             try:
                 args.torch_dtype = getattr(torch, td)
             except Exception:
-                print(f"Warning: unknown torch dtype '{td}', defaulting to torch.float16")
+                logging.getLogger(__name__).warning(f"Warning: unknown torch dtype '{td}', defaulting to torch.float16")
                 args.torch_dtype = torch.float16
 
     # Allow case-insensitive net names: map user-provided key to one of the
@@ -252,7 +327,7 @@ def main():
             args.net = match
         else:
             # No canonical match found — leave as provided but warn.
-            print(f"Warning: unknown --net '{args.net}'. Proceeding with provided value.")
+            logging.getLogger(__name__).warning(f"Warning: unknown --net '{args.net}'. Proceeding with provided value.")
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -296,14 +371,14 @@ def main():
         lm._device = f"cuda:{gpu_id}"
         logger.info(f"set quantization in gpu {gpu_id}")
 
-    print('----------------------------------------------------')
-    print("Quantization config: %s quantization disabled zero_point: %s" % (("Symmetric" if args.symmetric else "Asymmetric"), ("yes" if args.disable_zero_point else "no")))
-    print("Quantization precision: w_bits=%d  a_bits=%d" % (args.wbits, args.abits))
-    print("FlexQ linear layer strategy: %s" % (("Enabled" if args.flex_linear_quant else "Disabled")))
-    print("Adaptive clipping (down_proj): %s" % (("Enabled" if args.adaptive_clip_down_proj else "Disabled")))
-    print("weight group-wise quantization: %s  w_group_size:%s" % (("Enabled" if args.w_group_size else "Disabled"), str(args.w_group_size)))
-    print("activation group-wise quantization: %s  a_group_size:%s" % (("Enabled" if args.a_group_size else "Disabled"), str(args.a_group_size)))
-    print("multigpu:%s" % ("Enabled" if args.multigpu else "Disabled"))
+    logging.getLogger(__name__).info('----------------------------------------------------')
+    logging.getLogger(__name__).info("Quantization config: %s quantization disabled zero_point: %s", ("Symmetric" if args.symmetric else "Asymmetric"), ("yes" if args.disable_zero_point else "no"))
+    logging.getLogger(__name__).info("Quantization precision: w_bits=%d  a_bits=%d", args.wbits, args.abits)
+    logging.getLogger(__name__).info("FlexQ linear layer strategy: %s", ("Enabled" if args.flex_linear_quant else "Disabled"))
+    logging.getLogger(__name__).info("Adaptive clipping (down_proj): %s", ("Enabled" if args.adaptive_clip_down_proj else "Disabled"))
+    logging.getLogger(__name__).info("weight group-wise quantization: %s  w_group_size:%s", ("Enabled" if args.w_group_size else "Disabled"), str(args.w_group_size))
+    logging.getLogger(__name__).info("activation group-wise quantization: %s  a_group_size:%s", ("Enabled" if args.a_group_size else "Disabled"), str(args.a_group_size))
+    logging.getLogger(__name__).info("multigpu:%s", ("Enabled" if args.multigpu else "Disabled"))
 
     args.weight_quant_params = {
         "n_bits": args.wbits,
@@ -401,5 +476,5 @@ def main():
 
 
 if __name__ == "__main__":
-    print(sys.argv)
+    logging.getLogger(__name__).info(sys.argv)
     main()

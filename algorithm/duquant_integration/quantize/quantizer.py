@@ -148,11 +148,16 @@ class UniformAffineQuantizer(nn.Module):
             dim1, dim2 = x.shape
             x = x.reshape(-1, self.group_size)
             
-        x_int = round_ste(x.float() / scale).half()    # avoid overflow
-        
+        # Compute integer representation in float32 first to avoid overflow when
+        # converting very large values to float16. Only cast to half AFTER clamping
+        # to the quantizer range which prevents INF/NaN propagation.
+        x_int = round_ste(x.float() / scale)
+
         if round_zero_point is not None:
             x_int = x_int.add(round_zero_point)
-        x_int = x_int.clamp(self.qmin, self.qmax) 
+        # clamp in float32 space, then cast to half for downstream memory savings
+        x_int = x_int.clamp(self.qmin, self.qmax)
+        x_int = x_int.half()
 
         x_dequant = x_int
         if round_zero_point is not None:

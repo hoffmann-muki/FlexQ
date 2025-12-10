@@ -16,7 +16,8 @@ from datautils import get_loaders
 try:
     from llava.model import *   # required for llava
 except ImportError:
-    print("If want to quantize llave models, you should manually install llava from https://github.com/haotian-liu/LLaVA")
+    import logging
+    logging.getLogger(__name__).warning("If want to quantize llave models, you should manually install llava from https://github.com/haotian-liu/LLaVA")
 
 # import pdb
 # CUDA_VISIBLE_DEVICES=0 python generate_act_scale_shift.py --model ../model/llama3-8b

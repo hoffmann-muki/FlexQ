@@ -8,7 +8,6 @@ import copy
 import math
 import algorithm.duquant_integration.utils as utils
 import os
-import pdb
 import gc
 from algorithm.duquant_integration.quantize.utils import *
 from algorithm.duquant_integration.quantize.const import CLIPMIN
@@ -80,6 +79,11 @@ def duquant(
         raise ValueError("Only support for llama/Llama-2/Llama-3/Vicuna/Mistral now")
     
     
+    if hasattr(args, 'sensitive_layers') and args.sensitive_layers:
+        layers_to_quantize = sorted([int(l) for l in args.sensitive_layers])
+    else:
+        layers_to_quantize = list(range(len(layers)))
+    
     layers[0] = layers[0].to(dev)
     if args.deactive_amp and args.epochs>0:
         dtype = torch.float
@@ -100,7 +104,7 @@ def duquant(
             self.is_llama = False
 
         def forward(self, inp, **kwargs):
-            inps[cache["i"]] = inp
+            inps[cache["i"]] = inp.to(dtype)
             cache["i"] += 1
             cache["attention_mask"] = kwargs["attention_mask"]
             if self.is_llama:
@@ -167,7 +171,7 @@ def duquant(
     else:
         duquant_parameters = {}
 
-    for i in range(len(layers)):
+    for i in layers_to_quantize:
         for name in ['q', 'k', 'v', 'gate', 'up', 'down', 'o']:
             exec(f"args.{name}_weight_quant_params = copy.copy(args.weight_quant_params)")
             exec(f"args.{name}_act_quant_params = copy.copy(args.act_quant_params)")
@@ -195,6 +199,8 @@ def duquant(
         
         # init smooth parameters
         set_quant_state(qlayer, weight_quant=False, act_quant=True)  # weight will be manually quantized before forward
+        # ensure the nan flag exists for this layer even if no training occurs
+        nan_occurred = False
         qlayer.let = args.let
         use_shift = True 
         
@@ -204,7 +210,7 @@ def duquant(
         if args.resume:
             # raise NotImplementedError
             qlayer.load_state_dict(duquant_parameters[i], strict=False)
-            print(duquant_parameters[i].keys())
+            logger.debug("Loaded duquant parameters keys: %s", list(duquant_parameters[i].keys()))
 
         if args.smooth:
             if duquant_parameters.get(i):
@@ -243,7 +249,7 @@ def duquant(
                 loss_list = []
                 norm_list = []
                 
-                print(qlayer.qkt_smooth_scale)
+                logger.debug("qkt_smooth_scale: %s", getattr(qlayer, "qkt_smooth_scale", None))
                 for j in range(args.nsamples//args.batch_size):  
                     index = j * args.batch_size
                     # obtain output of quantization model
@@ -256,7 +262,7 @@ def duquant(
 
                     if not math.isfinite(loss.item()):
                         logger.info("Loss is NAN, stopping training")
-                        pdb.set_trace()
+                        # stop training on NaN; diagnostics below will capture details
                         
                     loss_list.append(loss.detach().cpu())
                     optimizer.zero_grad()
@@ -319,6 +325,9 @@ def duquant(
                 [{"params":let_parameters(qlayer, use_shift),"lr":args.let_lr}, {"params":lwc_parameters(qlayer),"lr":args.lwc_lr},],weight_decay=args.wd)
             loss_scaler = utils.NativeScalerWithGradNormCount()
             
+            nan_occurred = False
+            original_layer = copy.deepcopy(layers[i])  # save original for restoration if NaN
+            
             for epochs in range(args.epochs):
 
                 def check_nan_parameters(model_):
@@ -341,9 +350,32 @@ def duquant(
                             loss += loss_func(fp_inps_2[index:index+args.batch_size,], quant_out)
 
                     if not math.isfinite(loss.item()):
+                        # Debug NaN: log gradient norms and parameter stats via logger
+                        logger.error("NaN loss detected at epoch %s, batch %s, loss=%s", epochs, j, loss.item())
+                        # Log gradient norms
+                        total_norm = 0.0
+                        for p in get_post_parameters(qlayer):
+                            if p.grad is not None:
+                                param_norm = p.grad.data.norm(2)
+                                total_norm += float(param_norm.item()) ** 2
+                        total_norm = total_norm ** (1. / 2)
+                        logger.error("Total gradient norm: %s", total_norm)
+                        # Log parameter stats
+                        param_list = list(get_post_parameters(qlayer))
+                        for idx, param in enumerate(param_list):
+                            logger.error("Param %d: min=%f, max=%f, has_nan=%s, has_inf=%s", idx, float(param.min().item()), float(param.max().item()), torch.isnan(param).any().item(), torch.isinf(param).any().item())
+                        # Also log input/output stats if possible
+                        try:
+                            logger.error("quant_out stats: min=%f, max=%f, has_nan=%s, has_inf=%s", float(quant_out.min().item()), float(quant_out.max().item()), torch.isnan(quant_out).any().item(), torch.isinf(quant_out).any().item())
+                        except Exception:
+                            logger.exception("Failed to log quant_out stats")
+                        try:
+                            logger.error("fp_inps stats: min=%f, max=%f, has_nan=%s, has_inf=%s", float(fp_inps[index:index+args.batch_size].min().item()), float(fp_inps[index:index+args.batch_size].max().item()), torch.isnan(fp_inps[index:index+args.batch_size]).any().item(), torch.isinf(fp_inps[index:index+args.batch_size]).any().item())
+                        except Exception:
+                            logger.exception("Failed to log fp_inps stats")
+                        nan_occurred = True
                         logger.info("Loss is NAN, stopping training")
                         break
-                        pdb.set_trace()
                         
                     loss_list.append(loss.detach().cpu())
                     optimizer.zero_grad()
@@ -352,7 +384,7 @@ def duquant(
                     norm_list.append(norm.data)
                 
                 if check_nan_parameters(qlayer):
-                    print('detect NaN', epochs)
+                    logger.warning('Detected NaN in parameters at epoch %s', epochs)
                     loss.backward()
                     optimizer.zero_grad()
                     with torch.no_grad():
@@ -362,8 +394,55 @@ def duquant(
             clear_temp_variable(qlayer)
             del optimizer
         
+        if nan_occurred:
+            layers[i] = original_layer
+            continue  # skip quantization and marking for this layer
+        
         post_quant_inplace(qlayer, args)
         # obtain output of full-precision model
+        # Compute per-layer MSE between full-precision and (temporary) quantized outputs
+        try:
+            with torch.no_grad():
+                fp_outputs = []
+                quant_outputs = []
+                # ensure qlayer on device
+                qlayer.to(dev)
+                # full-precision outputs
+                set_quant_state(qlayer, weight_quant=False, act_quant=False)
+                # ensure the entire module is in a consistent floating dtype for FP forward
+                qlayer.to(dev, dtype=torch.float32)
+                for j in range(0, args.nsamples, args.batch_size):
+                    idx = j
+                    batch_inp = inps[idx:idx+args.batch_size].to(dev).to(torch.float32)
+                    out_fp = qlayer(batch_inp, attention_mask=attention_mask_batch, position_ids=position_ids)[0]
+                    fp_outputs.append(out_fp.cpu().to(torch.float32))
+
+                # temporary quantized outputs
+                set_quant_state(qlayer, weight_quant=True, act_quant=True)
+                # ensure the entire module is in a consistent quantized dtype for quant forward
+                qlayer.to(dev, dtype=torch.float16)
+                # use autocast for quantized forward if float16 inference expected
+                with torch.cuda.amp.autocast(enabled=(not args.deactive_amp)):
+                    for j in range(0, args.nsamples, args.batch_size):
+                        idx = j
+                        batch_inp = inps[idx:idx+args.batch_size].to(dev).to(torch.float16)
+                        # apply temporary quantization wrappers used elsewhere
+                        try:
+                            smooth_and_quant_temporary(qlayer, args, is_llama)
+                        except Exception:
+                            pass
+                        out_q = qlayer(batch_inp, attention_mask=attention_mask_batch, position_ids=position_ids)[0]
+                        quant_outputs.append(out_q.cpu().to(torch.float32))
+
+                fp_cat = torch.cat(fp_outputs, dim=0)
+                q_cat = torch.cat(quant_outputs, dim=0)
+                diff = (fp_cat - q_cat).view(fp_cat.size(0), -1)
+                mse_per_sample = (diff * diff).mean(dim=1)
+                mse = mse_per_sample.mean().item()
+                max_abs = diff.abs().max().item()
+                logger.info(f"Layer {i} fp vs quant MSE={mse:.6e}, max_abs={max_abs:.6e}")
+        except Exception as e:
+            logger.info(f"Could not compute per-layer MSE for layer {i}: {e}")
 
         qlayer.half()
         quant_inplace(qlayer)
@@ -376,15 +455,25 @@ def duquant(
                     for j in range(args.nsamples):
                         quant_inps[j] = qlayer(quant_inps[j].unsqueeze(0), attention_mask=attention_mask,position_ids=position_ids)[0]
             register_scales_and_zeros(qlayer)
+            try:
+                setattr(qlayer, '_duquant_processed', True)
+            except Exception:
+                pass
             layers[i] = qlayer.to("cpu")
             duquant_parameters[i] = duquant_state_dict(qlayer)
             if args.save_dir:
+                os.makedirs(args.save_dir, exist_ok=True)
                 torch.save(duquant_parameters, os.path.join(args.save_dir, f"duquant_parameters.pth"))
         else:
             register_scales_and_zeros(qlayer)
+            try:
+                setattr(qlayer, '_duquant_processed', True)
+            except Exception:
+                pass
             layers[i] = qlayer.to("cpu")
             duquant_parameters[i] = duquant_state_dict(qlayer)
             if args.save_dir:
+                os.makedirs(args.save_dir, exist_ok=True)
                 torch.save(duquant_parameters, os.path.join(args.save_dir, f"duquant_parameters.pth"))
 
         del layer

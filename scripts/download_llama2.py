@@ -1,5 +1,8 @@
 import os
+import logging
 from huggingface_hub import snapshot_download
+
+logger = logging.getLogger(__name__)
 
 def download_llama2_7b_no_cache(
     token: str,
@@ -16,7 +19,7 @@ def download_llama2_7b_no_cache(
     os.environ["HF_HUB_CACHE"] = "/tmp/hf_cache_no_cache"
     os.environ["TRANSFORMERS_CACHE"] = "/tmp/transformers_cache_no_cache"
 
-    print("Downloading LLaMA-2-7B-HF without using HuggingFace cache...")
+    logger.info("Downloading LLaMA-2-7B-HF without using HuggingFace cache...")
 
     snapshot_download(
         repo_id="meta-llama/Llama-2-7b-hf",
@@ -26,7 +29,7 @@ def download_llama2_7b_no_cache(
         allow_patterns="*"            # ensures only actual model files are saved
     )
 
-    print(f"Download complete. Model stored in: {save_dir}")
+    logger.info(f"Download complete. Model stored in: {save_dir}")
 
 
 if __name__ == "__main__":

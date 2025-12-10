@@ -9,6 +9,8 @@ import pickle
 from tqdm import tqdm
 import math
 
+logger = logging.getLogger(__name__)
+
 
 @torch.no_grad()
 def ampscaler_get_grad_norm(parameters, norm_type: float = 2.0) -> torch.Tensor:
@@ -111,8 +113,8 @@ def get_rot(n, device='cpu'):
         R = torch.matmul(R,q)
         return R
     except Exception as e:
-        print(e)
-        assert False, 'No such rotate matrix'
+        logger.exception("Failed to load or construct rotation matrix: %s", e)
+        raise RuntimeError('No such rotate matrix') from e
 
 
 def get_hadamard(n): 

@@ -257,7 +257,8 @@ class QuantLlamaDecoderLayer(nn.Module):
 
         # Fully Connected
         residual = hidden_states
-        hidden_states = self.post_attention_layernorm(hidden_states).half()
+        # keep dtype consistent with incoming tensors (do not force half precision here)
+        hidden_states = self.post_attention_layernorm(hidden_states)
         
         hidden_states = self.mlp(hidden_states.to(self.mlp.up_proj.weight.device)).to(residual.device)
         hidden_states = residual + hidden_states

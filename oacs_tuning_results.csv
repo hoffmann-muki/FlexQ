@@ -1,2 +1,0 @@
-timestamp,clip_percentile,zero_shift_scale,top_k_layers,ppl,task_metrics
-1765262689.2360036,0.99,0.0,1;30;31;4;29;19;27;0,930.7440185546875,arc_challenge.acc=0.222222;arc_challenge.acc_norm=0.282051

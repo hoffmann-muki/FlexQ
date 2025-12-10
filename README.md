@@ -128,6 +128,24 @@ The following describes critical configuration parameters:
 - `--eval_ppl`: evaluating the perplexity of quantized models.
 - `--tasks`: evaluating zero-shot tasks.
 
+DuQuant and Activation Smoothing (overview)
+------------------------------------------
+This project includes experimental, opt-in features intended to improve robustness when aggressively quantizing large language models to 6-bit weights and activations.
+
+- DuQuant: a rotation/permutation-based quantization approach that can be combined with light, per-layer learning to reduce quantization error. When enabled, the workflow logs per-layer diagnostics (MSE, max absolute values, and NaN detection) to help identify problematic layers and to safely fall back when instability is encountered.
+- Activation smoothing: a SmoothQuant-like operation that redistributes scale between activations and weights to reduce dynamic range mismatch and improve quantizer stability. The smoothing strength is tunable.
+
+Operational guidance
+• These features are opt-in. Start with conservative settings (learning-only fine-tuning, moderate calibration sample count) and compare against FP16 baselines before enabling more aggressive transforms (rotations/permutations).
+• Use the provided profiling tools to identify sensitive layers before applying rotations or global transforms; per-layer inspection reduces the risk of large regressions.
+• If instability is observed (large per-layer MSE or NaNs), revert to learning-only tuning or skip the offending layers for rotation/permutation transforms.
+
+Key command-line knobs (examples)
+- Enable the DuQuant flow with the corresponding CLI flag and control learning-based tuning via `--let` and `--lwc` (plus `--epochs` and learning rates). Use `--nsamples` to set the number of calibration samples.
+- Enable activation smoothing with a flag such as `--enable_smoothing` and tune strength with `--smoothing_alpha`.
+
+These additions are intended to be used by practitioners familiar with post-training quantization workflows; consult the code comments and the `algorithm/` directory for the available CLI flags and profiling utilities.
+
 
 ### Kernel Benchmark
 Please complete the compilation of the FlexQ kernel first:
