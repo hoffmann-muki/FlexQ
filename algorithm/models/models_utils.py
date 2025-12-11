@@ -58,6 +58,31 @@ class CacheHook:
 class LM(abc.ABC):
     def __init__(self):
         self.cache_hook = CacheHook(None)
+        # throughput counters (tokens, seconds) recorded by model forward wrappers
+        self._throughput_tokens = 0
+        self._throughput_time = 0.0
+
+    def record_model_call(self, num_tokens: int, elapsed_time: float) -> None:
+        """Record a single model forward: number of tokens processed and elapsed seconds."""
+        try:
+            self._throughput_tokens += int(num_tokens)
+            self._throughput_time += float(elapsed_time)
+        except Exception:
+            pass
+
+    def reset_throughput(self) -> None:
+        """Reset throughput counters to start a fresh measurement window."""
+        self._throughput_tokens = 0
+        self._throughput_time = 0.0
+
+    def get_throughput(self) -> float:
+        """Return average tokens/sec across recorded forwards, or NaN if no time recorded."""
+        try:
+            if self._throughput_time <= 0:
+                return float('nan')
+            return float(self._throughput_tokens) / float(self._throughput_time)
+        except Exception:
+            return float('nan')
 
     @abstractmethod
     def loglikelihood(self, requests):

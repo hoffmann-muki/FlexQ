@@ -48,6 +48,12 @@ def evaluate(lm, args, logger):
         _handles, _act_stats = utils.attach_activation_memory_hooks(lm.model)
     except Exception:
         _handles, _act_stats = [], {'peak_bytes': 0, 'per_layer_peak': {}, 'current_bytes': 0}
+    # Expose activation stats and gpu-peak accumulator on LM so other code (e.g. lm_eval) can reset and update
+    try:
+        lm._act_stats = _act_stats
+        lm._act_gpu_peak_max = 0
+    except Exception:
+        pass
     if args.multigpu:
         if "opt" in args.net.lower():
             map_layers_to_multi_gpus(lm.model.model.decoder.layers)
@@ -196,6 +202,19 @@ def evaluate(lm, args, logger):
             results[dataset] = ppl.item()
     
     if args.tasks != "":
+        # Reset throughput counters so we only measure the lm_eval tasks
+        try:
+            lm.reset_throughput()
+        except Exception:
+            pass
+
+        # Ensure activation counters are reset for lm_eval path
+        try:
+            if hasattr(lm, '_act_stats') and lm._act_stats is not None:
+                lm._act_stats['current_bytes'] = 0
+        except Exception:
+            pass
+
         t_results = evaluator.simple_evaluate(
             lm,
             tasks=args.tasks,
@@ -203,6 +222,34 @@ def evaluate(lm, args, logger):
             limit=None if args.limit == -1 else args.limit,
         )
         results.update(t_results)
+        # Record a single-summary throughput (average tokens/sec) for eval tasks only
+        try:
+            avg_tput = lm.get_throughput()
+            results['throughput_tokens_per_sec_eval_tasks'] = avg_tput
+        except Exception:
+            results['throughput_tokens_per_sec_eval_tasks'] = float('nan')
+        # Also summarize activation hook peaks collected during lm_eval (if available)
+        try:
+            act_stats = getattr(lm, '_act_stats', _act_stats)
+            hook_peak_bytes = int(act_stats.get('peak_bytes', 0))
+            per_layer_peak = act_stats.get('per_layer_peak', {})
+            if per_layer_peak:
+                max_per_layer = max(per_layer_peak.values())
+                num_layers_with_peaks = len([v for v in per_layer_peak.values() if v > 0])
+            else:
+                max_per_layer = 0
+                num_layers_with_peaks = 0
+            results['activation_hook_peak_bytes_eval_tasks'] = hook_peak_bytes
+            results['activation_per_layer_max_hook_peak_bytes_eval_tasks'] = max_per_layer
+            results['activation_num_layers_with_peaks_eval_tasks'] = num_layers_with_peaks
+            # GPU allocator peak aggregated during LM forwards
+            results['activation_gpu_peak_bytes_eval_tasks'] = int(getattr(lm, '_act_gpu_peak_max', 0))
+        except Exception:
+            results['activation_hook_peak_bytes_eval_tasks'] = 0
+            results['activation_per_layer_max_hook_peak_bytes_eval_tasks'] = 0
+            results['activation_num_layers_with_peaks_eval_tasks'] = 0
+            results['activation_gpu_peak_bytes_eval_tasks'] = 0
+
         logger.info(results)
         pprint(results)
         # for test of MMLU

@@ -1,5 +1,7 @@
 import transformers
 import torch
+import time
+from algorithm import utils
 from .models_utils import BaseLM, find_layers
 from transformers import AutoTokenizer, AutoConfig, AutoModelForCausalLM
 import torch.nn.functional as F
@@ -116,7 +118,67 @@ class LMClass(BaseLM):
         """
         with torch.no_grad():
 
-            return self.model(inps)["logits"]
+            # Robust timing: synchronize GPU when using CUDA to get accurate wall-clock
+            # elapsed time for the forward. We count tokens as number of elements in input.
+            num_tokens = int(inps.numel())
+            # If activation stats were attached by caller, reset per-forward accumulator
+            try:
+                if hasattr(self, '_act_stats') and self._act_stats is not None:
+                    utils.reset_activation_current(self._act_stats)
+            except Exception:
+                pass
+
+            # Prepare GPU baseline and timing
+            use_cuda = torch.cuda.is_available() and (
+                (isinstance(self.device, torch.device) and self.device.type == 'cuda')
+                or (isinstance(self.device, str) and str(self.device).startswith('cuda'))
+            )
+
+            try:
+                if use_cuda:
+                    try:
+                        torch.cuda.reset_peak_memory_stats(self.device)
+                    except Exception:
+                        pass
+                    baseline_alloc = torch.cuda.memory_allocated(self.device)
+                    if use_cuda:
+                        torch.cuda.synchronize()
+                t0 = time.perf_counter()
+                logits = self.model(inps)["logits"]
+                if use_cuda:
+                    torch.cuda.synchronize()
+                t1 = time.perf_counter()
+                elapsed = t1 - t0
+                if use_cuda:
+                    try:
+                        peak_alloc = torch.cuda.max_memory_allocated(self.device)
+                        gpu_activation_peak = int(max(0, peak_alloc - baseline_alloc))
+                    except Exception:
+                        gpu_activation_peak = 0
+                else:
+                    gpu_activation_peak = 0
+            except Exception:
+                # Fallback timing when anything goes wrong
+                t0 = time.perf_counter()
+                logits = self.model(inps)["logits"]
+                t1 = time.perf_counter()
+                elapsed = t1 - t0
+                gpu_activation_peak = 0
+
+            # Record throughput to base LM counters (safe no-op if method missing)
+            try:
+                self.record_model_call(num_tokens, elapsed)
+            except Exception:
+                pass
+
+            # Record GPU activation peak on the LM object (aggregated max)
+            try:
+                if hasattr(self, '_act_gpu_peak_max'):
+                    self._act_gpu_peak_max = max(getattr(self, '_act_gpu_peak_max', 0), int(gpu_activation_peak))
+            except Exception:
+                pass
+
+            return logits
 
     def model_batched_set(self, inps):
         dataset_logits = []

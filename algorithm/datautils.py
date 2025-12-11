@@ -91,6 +91,121 @@ def get_piqa_prompts(nsamples, seed, seqlen, model):
     return loader, None
 
 
+def get_hellaswag_prompts(nsamples, seed, seqlen, model):
+    print("get_hellaswag")
+    dataset = load_dataset("hellaswag", split="validation")
+    tokenizer, pad_id = _default_tokenizer(model)
+
+    def format_fn(doc):
+        # Try common hellaswag field layouts: 'endings' (list) or 'ending0'..'ending3'
+        choices = []
+        if isinstance(doc.get('endings', None), (list, tuple)):
+            choices = doc.get('endings')
+        else:
+            for i in range(4):
+                k = f'ending{i}'
+                if k in doc:
+                    choices.append(doc[k])
+
+        # Fallback to a generic 'choices' field if present
+        if not choices and 'choices' in doc:
+            c = doc.get('choices')
+            if isinstance(c, (list, tuple)):
+                choices = c
+
+        # Context field variants
+        context = doc.get('ctx') or doc.get('context') or doc.get('article') or ''
+
+        # Build a readable prompt
+        choices_text = ' / '.join(choices) if choices else ' / '.join(
+            [str(v) for k, v in doc.items() if isinstance(v, str) and k.lower().startswith('ending')][:4]
+        )
+        return f"Context: {context}\nChoices: {choices_text}\nAnswer:"
+
+    prompts = _get_prompt_texts(dataset, format_fn)
+    loader = _build_prompt_loader(prompts, tokenizer, nsamples, seed, seqlen, pad_id)
+    return loader, None
+
+
+def get_winogrande_prompts(nsamples, seed, seqlen, model):
+    """Build prompt loader for Winogrande-style tasks.
+
+    Handles multiple possible HF dataset field layouts:
+      - 'options' (list of choices)
+      - 'option0'..'optionN'
+      - 'sentence' with placeholder and 'answer'
+      - 'sentence1'/'sentence2' style
+    """
+    print("get_winogrande")
+    # winogrande requires a config name; try a set of sensible defaults and
+    # fall back to the first available config if needed.
+    configs_to_try = [
+        "winogrande_debiased",
+        "winogrande_xl",
+        "winogrande_m",
+        "winogrande_s",
+        "winogrande_l",
+        "winogrande_xs",
+    ]
+    dataset = None
+    last_exc = None
+    for cfg in configs_to_try:
+        try:
+            dataset = load_dataset("winogrande", cfg, split="validation")
+            break
+        except Exception as e:
+            last_exc = e
+            continue
+    if dataset is None:
+        # Give the original error back if none of the defaults worked
+        raise last_exc
+    tokenizer, pad_id = _default_tokenizer(model)
+
+    def format_fn(doc):
+        # Try 'options' list first
+        choices = []
+        if isinstance(doc.get('options', None), (list, tuple)):
+            choices = doc.get('options')
+
+        # Try option0, option1, ... pattern
+        if not choices:
+            for i in range(6):
+                k = f'option{i}'
+                if k in doc:
+                    choices.append(doc[k])
+
+        # Try common two-sentence layout (sentence1/sentence2)
+        sentence = doc.get('sentence') or doc.get('sent') or ''
+        if not sentence:
+            s1 = doc.get('sentence1') or doc.get('sent1')
+            s2 = doc.get('sentence2') or doc.get('sent2')
+            if s1 and s2:
+                sentence = f"{s1} {s2}"
+
+        # If still no choices, search for fields that look like endings/choices
+        if not choices:
+            choices = [v for k, v in doc.items() if isinstance(v, str) and k.lower().startswith('ending')]
+
+        # Fallback to any short string fields (not ideal but robust)
+        if not choices:
+            candidates = [v for k, v in doc.items() if isinstance(v, str) and len(v) < 200]
+            # pick up to 4 distinct small fields
+            seen = set()
+            for v in candidates:
+                if v not in seen:
+                    choices.append(v)
+                    seen.add(v)
+                if len(choices) >= 4:
+                    break
+
+        choices_text = ' / '.join(choices) if choices else ''
+        return f"Context: {sentence}\nChoices: {choices_text}\nAnswer:"
+
+    prompts = _get_prompt_texts(dataset, format_fn)
+    loader = _build_prompt_loader(prompts, tokenizer, nsamples, seed, seqlen, pad_id)
+    return loader, None
+
+
 def get_boolq_prompts(nsamples, seed, seqlen, model):
     print("get_boolq")
     dataset = load_dataset("boolq", split="validation")
@@ -116,4 +231,8 @@ def get_loaders(name, nsamples=128, seed=0, seqlen=2048, model="") -> Tuple:
         return get_arc_prompts(nsamples, seed, seqlen, model, "ARC-Easy")
     if "arc_challenge" in lower:
         return get_arc_prompts(nsamples, seed, seqlen, model, "ARC-Challenge")
+    if "hellaswag" in lower:
+        return get_hellaswag_prompts(nsamples, seed, seqlen, model)
+    if "winogrande" in lower:
+        return get_winogrande_prompts(nsamples, seed, seqlen, model)
     raise ValueError(f"Unsupported dataset '{name}'")
