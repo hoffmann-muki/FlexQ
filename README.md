@@ -1,12 +1,11 @@
-<h1 align="center">FlexQ: Efficient Post-training INT6 Quantization for LLM Serving via Algorithm-System Co-Design</h1>
-FlexQ is a novel and efficient post-training INT6 quantization framework tailored for LLM inference. It combines the following design methodologies: (1) weight & activation fine-grained group quantization; (2) selective High-Precision Activation Quantization for Sensitive Network Layers; (3) dynamic activation quantization and bit-level data packing; (4) efficient W6Ax CUDA kernels co-design.
+<h1 align="center">FlexQ: Efficient Post-training INT6 Quantization for LLM Serving</h1>
+FlexQ is a post-training INT6 quantization framework for efficient LLM inference. It combines: (1) fine-grained weight and activation group quantization; (2) selective high-precision activation quantization for sensitive layers; (3) dynamic activation quantization with bit-level packing; and (4) high-performance W6Ax CUDA kernels.
 
 ![kernel_overview](figures/kernel_overview.png)
 
 ## News
-- [2025/11] 🔥 Added experimental results for the LLaMA-3 model. See our v2 paper [here](https://arxiv.org/abs/2508.04405) for details.
-- [2025/08] 🚀 We release the FlexQ code!
-- [2025/08] 🔥 Our paper is available on arXiv!
+- [2025/11] Experimental results for LLaMA-3 (v2 paper: https://arxiv.org/abs/2508.04405).
+- [2025/08] FlexQ code released.
 
 ## Abstract
 Large Language Models (LLMs) demonstrate exceptional performance but entail significant memory and computational costs, restricting their practical deployment. While existing INT4/INT8 quantization reduces these costs, they often degrade accuracy or lack optimal efficiency. INT6 quantization offers a superior trade-off between model accuracy and inference efficiency, but lacks hardware support in modern GPUs, forcing emulation via higher-precision arithmetic units that limit acceleration. 
@@ -18,27 +17,12 @@ In this paper, we propose FlexQ, a novel post-training INT6 quantization framewo
 ## Install
 1. Clone this repository
 ```
-git clone https://github.com/FlyFoxPlayer/FlexQ.git
+git clone https://github.com/hoffmann-muki/FlexQ.git
 cd FlexQ
 ```
 
-2. Installation of the runtime environment
+2. Install runtime dependencies
 ```
-conda create -n flexq python=3.10
-conda activate flexq
-
-cd ./FlexQ/algorithm
-pip install --upgrade pip 
-pip install -r requirements.txt
-```
-
-Recommended: reproducible FP16 evaluation workflow
--------------------------------------------------
-If you plan to run accuracy evaluations using the Llama-2 family, the following workflow is a reliable and simple path that minimizes extra dependencies and is easiest to reproduce across machines.
-
-1. Create and activate the Python environment (Conda is recommended):
-
-```bash
 conda create -n flexq python=3.10 -y
 conda activate flexq
 cd ./FlexQ/algorithm
@@ -46,34 +30,24 @@ pip install --upgrade pip setuptools wheel
 pip install -r requirements.txt
 ```
 
-2. Obtain access to the Llama-2-7b model on Hugging Face and download a local snapshot (required for gated models):
+Recommended: reproducible FP16 evaluation workflow
+-------------------------------------------------
+For FP16 accuracy evaluation with Llama-2 models, follow these steps:
 
-```bash
-# install helper tools if you haven't already
-pip install huggingface_hub safetensors
+1. Create and activate the Conda environment and install requirements (see above).
 
-# interactive login (opens prompt for token)
-huggingface-cli login
+2. Obtain model access from Hugging Face (for gated Meta Llama models) and optionally download a local snapshot using `huggingface_hub.snapshot_download` after logging in with `huggingface-cli login`.
 
-# (optional) download the model to a local folder to avoid on-demand downloads during evaluation
-python - <<'PY'
-from huggingface_hub import snapshot_download
-snapshot_download(repo_id='meta-llama/Llama-2-7b-hf', cache_dir='/path/to/local/models/llama-2-7b-hf')
-PY
-```
-
-Note: you must accept Meta's license on the model page and use an account that has been granted access. If you prefer not to download a local copy, the evaluation script will attempt to download the model on demand (this may be slower and requires the same access).
-
-3. Run an example FP16 evaluation (loads model in FP16 by default):
+3. Run a sample FP16 evaluation (model path can be local or Hugging Face ID):
 
 ```bash
 cd ./FlexQ/algorithm
 python main.py --model /path/to/local/models/llama-2-7b-hf --net Llama-2-7b --eval_ppl --deactive_amp
-# or (download on demand):
+# or download on demand:
 python main.py --model meta-llama/Llama-2-7b-hf --net Llama-2-7b --eval_ppl --deactive_amp
 ```
 
-Keep `--wbits` and `--abits` at their defaults (16) when you want to run the FP16 evaluation flow — the code triggers additional quantization steps only when those flags are set to non-16 values.
+Keep `--wbits` and `--abits` at 16 for FP16 evaluation; quantization runs are enabled when these flags are set to lower values.
 
 Portable environment options
 ----------------------------
@@ -128,9 +102,9 @@ The following describes critical configuration parameters:
 - `--eval_ppl`: evaluating the perplexity of quantized models.
 - `--tasks`: evaluating zero-shot tasks.
 
-DuQuant and Activation Smoothing (overview)
+DuQuant (primary) and Activation Smoothing (overview)
 ------------------------------------------
-This project includes experimental, opt-in features intended to improve robustness when aggressively quantizing large language models to 6-bit weights and activations.
+DuQuant is the primary algorithm used for the uniform W6A6 pathway in this repository; activation smoothing is an optional, complementary technique. Both features are opt-in and intended to improve robustness when aggressively quantizing large language models to 6-bit weights and activations.
 
 - DuQuant: a rotation/permutation-based quantization approach that can be combined with light, per-layer learning to reduce quantization error. When enabled, the workflow logs per-layer diagnostics (MSE, max absolute values, and NaN detection) to help identify problematic layers and to safely fall back when instability is encountered.
 - Activation smoothing: a SmoothQuant-like operation that redistributes scale between activations and weights to reduce dynamic range mismatch and improve quantizer stability. The smoothing strength is tunable.
