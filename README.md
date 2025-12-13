@@ -1,18 +1,5 @@
-<h1 align="center">FlexQ: Efficient Post-training INT6 Quantization for LLM Serving</h1>
-FlexQ is a post-training INT6 quantization framework for efficient LLM inference. It combines: (1) fine-grained weight and activation group quantization; (2) selective high-precision activation quantization for sensitive layers; (3) dynamic activation quantization with bit-level packing; and (4) high-performance W6Ax CUDA kernels.
-
-![kernel_overview](figures/kernel_overview.png)
-
-## News
-- [2025/11] Experimental results for LLaMA-3 (v2 paper: https://arxiv.org/abs/2508.04405).
-- [2025/08] FlexQ code released.
-
-## Abstract
-Large Language Models (LLMs) demonstrate exceptional performance but entail significant memory and computational costs, restricting their practical deployment. While existing INT4/INT8 quantization reduces these costs, they often degrade accuracy or lack optimal efficiency. INT6 quantization offers a superior trade-off between model accuracy and inference efficiency, but lacks hardware support in modern GPUs, forcing emulation via higher-precision arithmetic units that limit acceleration. 
-
-In this paper, we propose FlexQ, a novel post-training INT6 quantization framework combining algorithmic innovation with system-level optimizations. FlexQ employs uniform 6-bit weight quantization across all layers, with adaptive retention of 8-bit activations in layers identified through layer-wise sensitivity analysis. To maximize hardware efficiency, we develop a specialized high-performance GPU kernel supporting matrix multiplication for W6A6 and W6A8 representations via Binary Tensor Core (BTC) equivalents, effectively bypassing the lack of native INT6 tensor cores. Evaluations on LLaMA family models show FlexQ maintains near-FP16 accuracy, with perplexity increases of no more than 0.1 on WikiText2. The proposed kernel achieves an average 1.39× speedup over ABQ-LLM on LLaMA-2-70B linear layers. End-to-end, FlexQ delivers 1.33× inference acceleration and 1.21× memory savings over SmoothQuant.
-
-
+<h1 align="center">DuplexQuant: Efficient Post-training INT6 Quantization for LLM Serving</h1>
+DuplexQuant is a post-training INT6 quantization framework built on FlexQ that enables uniform W6A6 deployment for large language models. The project combines: (1) fine-grained weight and activation group quantization; (2) an algorithmic DuQuant flow that permits uniform 6-bit weights and activations across layers; (3) optional activation-smoothing (a light redistribution of scale between activations and weights) to improve robustness; and (4) system-level optimizations for efficient execution on common GPU architectures.
 
 ## Install
 1. Clone this repository
@@ -79,7 +66,6 @@ Important: CUDA / PyTorch binary compatibility and system toolkits are still hos
 
 ## Usage
 ### Accuracy Evaluation
-We provide several scripts to reproduce the results in our paper.
 You can execute the following scripts to complete the **FP16** Accuracy Evaluation.
 ```
 python main.py --model /Path/To/Model \
@@ -98,28 +84,24 @@ The following describes critical configuration parameters:
 - `--abits`: activation quantization bits.
 - `--group_size`: group size for weight/activation quantization. If unset, defaults to per-channel quantization.
 - `--symmetric`: use symmetric quantization. If unset, defaults to asymmetric quantization.
-- `--flex_linear_quant`: Enables high-precision activation quantization for critical sensitivity layers. If unset, uniformly quantizes all layers based on `--wbits` and `--abits` by default.
+-- `--flex_linear_quant`: Enables the flexq uniform W6A6 pathway. When set, the code runs the calibration and transforms required to apply a uniform 6-bit activation and weight quantization pipeline (with optional activation-smoothing), removing the need for selective high-precision fallbacks.
 - `--eval_ppl`: evaluating the perplexity of quantized models.
 - `--tasks`: evaluating zero-shot tasks.
 
-DuQuant (primary) and Activation Smoothing (overview)
+DuQuant and Activation Smoothing
 ------------------------------------------
-DuQuant is the primary algorithm used for the uniform W6A6 pathway in this repository; activation smoothing is an optional, complementary technique. Both features are opt-in and intended to improve robustness when aggressively quantizing large language models to 6-bit weights and activations.
-
-- DuQuant: a rotation/permutation-based quantization approach that can be combined with light, per-layer learning to reduce quantization error. When enabled, the workflow logs per-layer diagnostics (MSE, max absolute values, and NaN detection) to help identify problematic layers and to safely fall back when instability is encountered.
-- Activation smoothing: a SmoothQuant-like operation that redistributes scale between activations and weights to reduce dynamic range mismatch and improve quantizer stability. The smoothing strength is tunable.
+DuQuant enhances the uniform W6A6 pathway in this repository. It is an algorithmic calibration and transform pipeline that prepares activations and weights for uniform 6-bit representation. Activation-smoothing is a complementary technique that further improves robustness. Both features are opt-in. The design objective of DuQuant is to remove the need for selective high-precision activation fallbacks by reducing per-layer quantization error through algorithmic calibration and light per-layer transforms. Activation-smoothing is a controlled redistribution of scale between activations and weights (akin to SmoothQuant) that reduces range mismatches and improves stability for aggressive W6A6 quantization.
 
 Operational guidance
-• These features are opt-in. Start with conservative settings (learning-only fine-tuning, moderate calibration sample count) and compare against FP16 baselines before enabling more aggressive transforms (rotations/permutations).
-• Use the provided profiling tools to identify sensitive layers before applying rotations or global transforms; per-layer inspection reduces the risk of large regressions.
-• If instability is observed (large per-layer MSE or NaNs), revert to learning-only tuning or skip the offending layers for rotation/permutation transforms.
+- These features are opt-in. Start with conservative calibration settings (moderate calibration sample counts and limited per-layer transforms) and compare against FP16 baselines before enabling more aggressive transforms.
+- Use the provided profiling tools to validate calibration results and confirm that per-layer statistics indicate safe uniform quantization.
+- If instability is observed (e.g., large per-layer MSE or NaNs), reduce transform strength or increase calibration samples; the tooling supports safe fallback to less aggressive configurations.
 
 Key command-line knobs (examples)
 - Enable the DuQuant flow with the corresponding CLI flag and control learning-based tuning via `--let` and `--lwc` (plus `--epochs` and learning rates). Use `--nsamples` to set the number of calibration samples.
 - Enable activation smoothing with a flag such as `--enable_smoothing` and tune strength with `--smoothing_alpha`.
 
 These additions are intended to be used by practitioners familiar with post-training quantization workflows; consult the code comments and the `algorithm/` directory for the available CLI flags and profiling utilities.
-
 
 ### Kernel Benchmark
 Please complete the compilation of the FlexQ kernel first:
@@ -170,28 +152,8 @@ cd build_release
 mpirun -n 2 ./bin/llama_example
 ```
 
-## Results
-### Accuracy Evaluation 
-FlexQ achieves state-of-the-art (SoTA) accuracy performance at W6A6 precision. We evaluated the perplexity performance of FlexQ on the LLaMA family and OPT models.
-![perplexity](figures/perplexity.png)
-
-Additionally, we further provide the performance of FlexQ on zero-shot common sense tasks.
-![zero-shot_llama1](figures/zero-shot_llama1.png)
-![zero-shot_llama2](figures/zero-shot_llama2.png)
-
-### Kernel Performance 
-FlexQ maintains superior performance across all tested LLM workloads. Specifically, with batch sizes of 1, 4, and 8, FlexQ achieves average speedups of 1.78×, 1.81×, and 1.82× over cuBLAS, and 1.24×, 1.24×, and 1.27× over ABQ-LLM, respectively.
-![kernel_benchmark](figures/kernel_benchmark.png)
-
-### E2E Performance
-We evaluate the end-to-end performance of FlexQ in LLaMA family and OPT models. Results on the LLaMA-13B model demonstrate that FlexQ achieves up to 2.38× inference acceleration and 2.28× memory compression relative to FP16. FlexQ delivers 1.25–1.33× speedup and 1.19–1.24× reduction in memory footprint compared to SmoothQuant.
-![e2e_benchmark](figures/e2e_benchmark.png)
-
-## Acknowledgement
-This repo benefits from [ABQ-LLM](https://github.com/bytedance/ABQ-LLM.git). We extend our sincere gratitude for their wonderful work.
-
 ## Citation
-If you use our FlexQ approach in your research, please cite our paper:
+This repository extends the work done in the FlexQ paper:
 ```
 @article{zhang2025flexq,
   title={FlexQ: Efficient Post-training INT6 Quantization for LLM Serving via Algorithm-System Co-Design},
