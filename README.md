@@ -103,6 +103,47 @@ Key command-line knobs (examples)
 
 These additions are intended to be used by practitioners familiar with post-training quantization workflows; consult the code comments and the `algorithm/` directory for the available CLI flags and profiling utilities.
 
+Example runs
+------------
+Below are three example commands demonstrating common evaluation workflows used in this repository. Adjust paths, device mappings, and flags as needed.
+
+- DuQuant (DuQuant perplexity and zero-shot evaluation run — no rotation/permutation transforms; learning enabled):
+
+```bash
+PYTHONPATH=. python algorithm/quantize.py \
+  --duquant --let --lwc --epochs 1 \
+  --permutation_times 0 --max_rotation_step 0 \
+  --model models/llama-2-7b-hf --dataset piqa --tasks piqa \
+  --device_map cuda:0 --torch_dtype float16 --nsamples 128 \
+  --wbits 6 --abits 6 --block_size 128 \
+  --let_lr 1e-4 --lwc_lr 5e-4 --wd 0.0 \
+  --output_csv algorithm/w6a6_duquant_no_rot_learn.csv \
+  --seed 0 --limit 50 --eval_ppl --deactive_amp --save_dir ./duquant_debug
+```
+
+- W6A8 selective high-precision activation baseline (selective activations kept at 8-bit):
+
+```bash
+PYTHONPATH=. python algorithm/quantize.py \
+  --model models/llama-2-7b-hf --dataset piqa --tasks piqa \
+  --device_map cuda:0 --torch_dtype float16 --nsamples 128 \
+  --wbits 6 --abits 8 --block_size 128 \
+  --flex_linear_quant \
+  --output_csv algorithm/baseline_w6a8_selective.csv \
+  --seed 0 --limit 50 --eval_ppl
+```
+
+- Uniform W6A6 baseline (no DuQuant transforms; uniform 6-bit weights and activations):
+
+```bash
+PYTHONPATH=. python algorithm/quantize.py \
+  --model models/llama-2-7b-hf --dataset piqa --tasks piqa \
+  --device_map cuda:0 --torch_dtype float16 --nsamples 128 \
+  --wbits 6 --abits 6 --block_size 128 \
+  --output_csv algorithm/baseline_w6a6.csv \
+  --limit 50 --seed 0 --eval_ppl
+```
+
 ### Kernel Benchmark
 Please complete the compilation of the FlexQ kernel first:
 ```
