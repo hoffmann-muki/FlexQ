@@ -84,7 +84,7 @@ The following describes critical configuration parameters:
 - `--abits`: activation quantization bits.
 - `--group_size`: group size for weight/activation quantization. If unset, defaults to per-channel quantization.
 - `--symmetric`: use symmetric quantization. If unset, defaults to asymmetric quantization.
--- `--flex_linear_quant`: Enables the flexq uniform W6A6 pathway. When set, the code runs the calibration and transforms required to apply a uniform 6-bit activation and weight quantization pipeline (with optional activation-smoothing), removing the need for selective high-precision fallbacks.
+- `--flex_linear_quant`: Enables the flexq uniform W6A6 pathway. When set, the code runs the calibration and transforms required to apply a uniform 6-bit activation and weight quantization pipeline (with optional activation-smoothing), removing the need for selective high-precision fallbacks.
 - `--eval_ppl`: evaluating the perplexity of quantized models.
 - `--tasks`: evaluating zero-shot tasks.
 
