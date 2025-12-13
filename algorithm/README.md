@@ -17,7 +17,7 @@ Certain layers (notably MLP down-projections) exhibit rare, high-magnitude activ
 1. Install runtime dependencies and activate the algorithm environment:
 
 ```bash
-conda activate flexq
+conda activate duplexquant
 cd algorithm
 pip install -r requirements.txt
 ```

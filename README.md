@@ -4,15 +4,15 @@ DuplexQuant is a post-training INT6 quantization framework built on FlexQ that e
 ## Install
 1. Clone this repository
 ```
-git clone https://github.com/hoffmann-muki/FlexQ.git
-cd FlexQ
+git clone https://github.com/hoffmann-muki/DuplexQuant.git
+cd DuplexQuant
 ```
 
 2. Install runtime dependencies
 ```
-conda create -n flexq python=3.10 -y
-conda activate flexq
-cd ./FlexQ/algorithm
+conda create -n duplexquant python=3.10 -y
+conda activate duplexquant
+cd ./DuplexQuant/algorithm
 pip install --upgrade pip setuptools wheel
 pip install -r requirements.txt
 ```
@@ -28,7 +28,7 @@ For FP16 accuracy evaluation with Llama-2 models, follow these steps:
 3. Run a sample FP16 evaluation (model path can be local or Hugging Face ID):
 
 ```bash
-cd ./FlexQ/algorithm
+cd ./DuplexQuant/algorithm
 python main.py --model /path/to/local/models/llama-2-7b-hf --net Llama-2-7b --eval_ppl --deactive_amp
 # or download on demand:
 python main.py --model meta-llama/Llama-2-7b-hf --net Llama-2-7b --eval_ppl --deactive_amp
@@ -44,8 +44,8 @@ You can keep your conda environment inside the project (a "prefix" environment) 
 
 ```bash
 # from the repository root
-conda create --prefix ./flexq/.conda-env python=3.10 -y
-conda activate ./flexq/.conda-env
+conda create --prefix ./duplexquant/.conda-env python=3.10 -y
+conda activate ./duplexquant/.conda-env
 pip install --upgrade pip setuptools wheel
 pip install -r algorithm/requirements.txt
 # install torch wheel appropriate for the host's CUDA (example):
@@ -56,9 +56,9 @@ pip install --index-url https://download.pytorch.org/whl/cu121/ torch==2.2.0
 
 ```bash
 conda install -c conda-forge conda-pack -y
-conda-pack -p ./flexq/.conda-env -o ./flexq/flexq-conda-env.tar.gz
+conda-pack -p ./duplexquant/.conda-env -o ./duplexquant/duplexquant-conda-env.tar.gz
 # on the destination host, extract and run:
-tar -xzf flexq-conda-env.tar.gz -C <target_dir>
+tar -xzf duplexquant-conda-env.tar.gz -C <target_dir>
 <target_dir>/bin/conda-unpack
 ```
 
@@ -106,7 +106,7 @@ These additions are intended to be used by practitioners familiar with post-trai
 ### Kernel Benchmark
 Please complete the compilation of the FlexQ kernel first:
 ```
-cd ./FlexQ/engine
+cd ./DuplexQuant/engine
 bash build.sh
 ```
 To obtain benchmark results for the cuBLAS(W8A8) kernel, please execute:
@@ -121,7 +121,7 @@ bash test_flexq_kernel.sh
 ### FasterTransformer E2E Performance
 Please complete the FasterTransformer compilation (Make sure you install MPI):
 ```
-cd ./FlexQ/e2e
+cd ./DuplexQuant/e2e
 bash build.sh
 ``` 
 
